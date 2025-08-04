@@ -17,6 +17,7 @@ app = typer.Typer(
 
 class Tool(str, Enum):
     """Supported tools/frameworks."""
+    # Web Frameworks
     REACT = "react"
     TAILWIND = "tailwind"
     PRISMA = "prisma"
@@ -32,12 +33,21 @@ class Tool(str, Enum):
     SPRING = "spring"
     GO_GIN = "gin"
     RUST_ACTIX = "actix"
+    
+    # Infrastructure & Cloud
     DOCKER = "docker"
     KUBERNETES = "kubernetes"
     TERRAFORM = "terraform"
     AWS = "aws"
     AZURE = "azure"
     GCP = "gcp"
+    
+    # Additional Ecosystems (auto-detected)
+    RUBY = "ruby"
+    PHP = "php"
+    DOTNET = "dotnet"
+    ELIXIR = "elixir"
+    HASKELL = "haskell"
 
 
 def get_config_path() -> Path:
@@ -244,10 +254,47 @@ def detect(
         typer.echo("Run 'llmcontext init' to create a configuration file.")
         raise typer.Exit(1)
     
-    typer.echo("🔍 Scanning codebase for configured frameworks...")
-    # TODO: Implement actual framework detection
-    typer.echo("⚠️  Framework detection not yet implemented.")
-    typer.echo("This will be implemented in future iterations.")
+    typer.echo("🔍 Scanning codebase for frameworks and libraries...")
+    
+    try:
+        from llmcontext.core.detector import FrameworkDetector
+        
+        detector = FrameworkDetector()
+        detected_frameworks = detector.detect_frameworks(Path.cwd())
+        
+        if not detected_frameworks:
+            typer.echo("📭 No frameworks or libraries detected in the current codebase.")
+            return
+        
+        typer.echo(f"✅ Found {len(detected_frameworks)} frameworks/libraries:")
+        typer.echo()
+        
+        # Group by source file for better display
+        by_source = {}
+        for framework in detected_frameworks:
+            source = framework.metadata.get("source", "unknown")
+            if source not in by_source:
+                by_source[source] = []
+            by_source[source].append(framework)
+        
+        for source, frameworks in by_source.items():
+            typer.echo(f"📁 {source}:")
+            for framework in frameworks:
+                version_info = f" (v{framework.version})" if framework.version else ""
+                confidence = f" [{framework.confidence:.1f}]" if framework.confidence < 0.9 else ""
+                typer.echo(f"  • {framework.name}{version_info}{confidence}")
+            typer.echo()
+        
+        # Show summary
+        unique_frameworks = len(set(f.name for f in detected_frameworks))
+        typer.echo(f"📊 Summary: {unique_frameworks} unique frameworks/libraries detected")
+        
+    except ImportError as e:
+        typer.echo(f"❌ Error importing detector: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during detection: {e}")
+        raise typer.Exit(1)
 
 
 def get_default_patterns(tool: Tool) -> List[str]:
