@@ -2,11 +2,12 @@
 FastAPI sidecar server for LLMContext.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from pathlib import Path
+import os
 
 app = FastAPI(
     title="LLMContext API",
@@ -55,6 +56,22 @@ class ContextResponse(BaseModel):
     total_results: int
 
 
+class ContextChunk(BaseModel):
+    chunk_id: str
+    content: str
+    tool_name: str
+    topic: str
+    source_file: str
+    similarity_score: float
+    metadata: Dict[str, Any]
+
+
+class VectorContextResponse(BaseModel):
+    chunks: List[ContextChunk]
+    total_results: int
+    query_info: Dict[str, Any]
+
+
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
@@ -66,6 +83,7 @@ async def root():
             "health": "/health",
             "process": "/process",
             "context": "/context",
+            "vector_context": "/context/vector",
             "frameworks": "/frameworks",
             "docs": "/docs",
         },
@@ -148,6 +166,162 @@ async def get_context(request: ContextRequest):
             total_results=len(context)
         )
     
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/context/vector", response_model=VectorContextResponse)
+async def get_vector_context(
+    tool: Optional[str] = Query(None, description="Tool/framework name to search in"),
+    topic: Optional[str] = Query(None, description="Topic to search in"),
+    query: Optional[str] = Query(None, description="Text query for semantic search"),
+    n_results: int = Query(10, description="Number of results to return", ge=1, le=100),
+    similarity_threshold: float = Query(0.5, description="Minimum similarity score", ge=0.0, le=1.0)
+):
+    """
+    Retrieve context chunks from the vector database.
+    
+    This endpoint searches the ChromaDB vector store for relevant documentation chunks
+    based on tool, topic, and optional text query parameters.
+    """
+    try:
+        # Import vector database module
+        try:
+            from llmcontext.core.vectordb import VectorDatabase
+        except ImportError as e:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Vector database module not available: {str(e)}"
+            )
+        
+        # Check if vector database exists
+        persist_dir = Path("chroma_db")
+        if not persist_dir.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Vector database not found. Please run 'llmcontext vectordb add' first."
+            )
+        
+        # Initialize vector database
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenAI API key not found. Set OPENAI_API_KEY environment variable."
+            )
+        
+        try:
+            db = VectorDatabase(
+                persist_directory=persist_dir,
+                collection_name="llmcontext_docs",
+                api_key=api_key
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize vector database: {str(e)}"
+            )
+        
+        # Determine search strategy based on parameters
+        if query:
+            # Semantic search with optional filters
+            filter_metadata = {}
+            if tool:
+                filter_metadata['tool_name'] = tool
+            if topic:
+                filter_metadata['topic'] = topic
+            
+            search_results = db.search_by_text(
+                query=query,
+                n_results=n_results,
+                filter_metadata=filter_metadata if filter_metadata else None
+            )
+            
+            # Filter by similarity threshold
+            search_results = [
+                result for result in search_results 
+                if result.similarity_score >= similarity_threshold
+            ]
+            
+        elif tool and topic:
+            # Get documents for specific tool and topic
+            search_results = db.get_documents_by_topic(topic, n_results)
+            # Filter by tool
+            search_results = [
+                result for result in search_results 
+                if result.tool_name == tool
+            ]
+            
+        elif tool:
+            # Get documents for specific tool
+            search_results = db.get_documents_by_tool(tool, n_results)
+            
+        elif topic:
+            # Get documents for specific topic
+            search_results = db.get_documents_by_topic(topic, n_results)
+            
+        else:
+            # Get collection info to show available data
+            info = db.get_collection_info()
+            if info.count == 0:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No documents found in vector database. Please add embeddings first."
+                )
+            
+            # Get all available tools and topics
+            tools = db.get_tools()
+            topics = db.get_topics()
+            
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Please specify at least one of: tool, topic, or query",
+                    "available_tools": tools,
+                    "available_topics": topics,
+                    "total_documents": info.count
+                }
+            )
+        
+        if not search_results:
+            raise HTTPException(
+                status_code=404,
+                detail="No matching documents found for the specified criteria."
+            )
+        
+        # Convert search results to response format
+        chunks = []
+        for result in search_results:
+            chunk = ContextChunk(
+                chunk_id=result.chunk_id,
+                content=result.content,
+                tool_name=result.tool_name,
+                topic=result.topic,
+                source_file=result.source_file,
+                similarity_score=result.similarity_score,
+                metadata=result.metadata
+            )
+            chunks.append(chunk)
+        
+        # Prepare query information
+        query_info = {
+            "tool": tool,
+            "topic": topic,
+            "query": query,
+            "n_results": n_results,
+            "similarity_threshold": similarity_threshold,
+            "results_returned": len(chunks)
+        }
+        
+        return VectorContextResponse(
+            chunks=chunks,
+            total_results=len(chunks),
+            query_info=query_info
+        )
+    
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
