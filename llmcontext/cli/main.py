@@ -382,6 +382,23 @@ def add(
     
     # Process documentation if not skipped
     if not skip_docs:
+        # Check if model provider is configured
+        if "model_provider" not in config or not config["model_provider"] or "model_name" not in config or not config["model_name"]:
+            typer.echo("WARNING: No model provider configured. Summarization will not run until a model is set.")
+            typer.echo("")
+            typer.echo("SETUP GUIDE:")
+            typer.echo("")
+            typer.echo("Option 1: Use GPT-4 (requires OpenAI API key):")
+            typer.echo("   $ llmcontext config --provider openai --model gpt-4")
+            typer.echo("")
+            typer.echo("Option 2: Use a free local model with Ollama:")
+            typer.echo("   1. Download Ollama: https://ollama.com/download")
+            typer.echo("   2. Run: $ ollama run mistral")
+            typer.echo("   3. Run: $ llmcontext config --provider ollama --model mistral")
+            typer.echo("")
+            typer.echo("After setting up a model, run this command again to process documentation.")
+            return
+        
         try:
             typer.echo(f"PROCESSING: Starting documentation processing for {tool.value}...")
             

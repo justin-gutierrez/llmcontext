@@ -6,32 +6,23 @@
 
 ---
 
- ## django_hybrid_001
+ Title: django_hybrid_001
 
-### Overview
+Framework configuration in Django:
 
-This section provides information about the Django framework in Python, focusing on contributing to the project, its development process, and security policies.
+- To use Django, first understand its development process and contributing guidelines. (Community > Contributing to Django)
+- Familiarize yourself with the Django source code repository. (The Django source code repository)
+- Learn about security policies. (Security policies)
+- Explore design philosophies. (Design philosophies: Overview)
 
-#### Contributing to Django
-- [Contributing to Django](https://docs.djangoproject.com/en/stable/internals/)
-- [The release process](https://docs.djangoproject.com/en/latest/internals/release-process/)
-- [Team organization](https://docs.djangoproject.com/en/latest/internals/team/)
-- [The Django source code repository](https://github.com/django/django)
-- [Security policies](https://docs.djangoproject.com/en/latest/contributing/security/)
-- [Mailing lists and forum](https://docs.djangoproject.com/en/latest/community/communication/)
+Documentation:
 
-#### Design philosophies
-- [Overview Documentation](https://docs.djangoproject.com/en/latest/intro/)
+- This documentation provides information about Django. (About this documentation)
 
-#### Third-party distributions
-- [Overview](https://docs.djangoproject.com/en/latest/topics/third-party/)
+Third-party distributions:
 
-#### Django over time
-- [API stability](https://docs.djangoproject.com/en/latest/internals/api-stability/)
-- [Release notes and upgrading instructions](https://docs.djangoproject.com/en/latest/releases/)
-- [Deprecation timeline](https://docs.djangoproject.com/en/latest/internals/deprecation/)
+- Learn about third-party distributions related to Django. (Third-party distributions: Overview)
 
-#### Previous and next page links for Django documentation
+Getting started with Django:
 
-#### Django documentation contents
-- [Getting started](https://docs.djangoproject.com/en/latest/)
+- Follow the getting started guide for a step-by-step introduction to Django. (Getting started)
