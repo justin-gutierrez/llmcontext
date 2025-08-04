@@ -574,6 +574,98 @@ def summarize(
         raise typer.Exit(1)
 
 
+@app.command()
+def process(
+    tool_name: str = typer.Argument(..., help="Name of the tool to process"),
+    chunks_dir: Path = typer.Argument(..., help="Directory containing chunk files"),
+    output_dir: Path = typer.Option(Path("docs"), "--output-dir", "-o", help="Output directory for processed files"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="OpenAI API key (or set OPENAI_API_KEY env var)"),
+    model: str = typer.Option("gpt-4o-mini", "--model", "-m", help="OpenAI model to use for summarization"),
+    topics: Optional[str] = typer.Option(None, "--topics", "-t", help="Comma-separated list of topics to process"),
+    preserve_original: bool = typer.Option(True, "--preserve-original", help="Preserve original chunks in output"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be processed without making API calls")
+):
+    """Process all documentation chunks for a tool using the summarizer."""
+    try:
+        from llmcontext.core.processor import DocumentationProcessor
+        
+        # Check for API key
+        if not api_key and not os.getenv("OPENAI_API_KEY"):
+            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
+            raise typer.Exit(1)
+        
+        # Parse topics
+        topic_list = None
+        if topics:
+            topic_list = [t.strip() for t in topics.split(",")]
+        
+        processor = DocumentationProcessor(
+            api_key=api_key,
+            model=model,
+            output_base_dir=output_dir,
+            preserve_original=preserve_original
+        )
+        
+        if dry_run:
+            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            typer.echo(f"Tool: {tool_name}")
+            typer.echo(f"Chunks directory: {chunks_dir}")
+            typer.echo(f"Output directory: {output_dir}")
+            if topic_list:
+                typer.echo(f"Topics: {', '.join(topic_list)}")
+            else:
+                typer.echo("Topics: All available")
+            return
+        
+        # Check if chunks directory exists
+        if not chunks_dir.exists():
+            typer.echo(f"❌ Chunks directory not found: {chunks_dir}")
+            raise typer.Exit(1)
+        
+        typer.echo(f"Processing documentation for tool: {tool_name}")
+        typer.echo(f"Chunks directory: {chunks_dir}")
+        typer.echo(f"Output directory: {output_dir}")
+        typer.echo(f"Model: {model}")
+        if topic_list:
+            typer.echo(f"Topics: {', '.join(topic_list)}")
+        else:
+            typer.echo("Topics: All available")
+        
+        # Process documentation
+        results = processor.process_tool_documentation(tool_name, chunks_dir, topic_list)
+        
+        # Show results
+        typer.echo(f"\n✅ Processing completed!")
+        typer.echo(f"📊 Topics processed: {len(results)}")
+        
+        total_original_chunks = sum(len(result.original_chunks) for result in results.values())
+        total_summarized_chunks = sum(len(result.summarized_chunks) for result in results.values())
+        total_processing_time = sum(result.processing_stats['total_processing_time'] for result in results.values())
+        
+        typer.echo(f"📊 Total chunks: {total_original_chunks} → {total_summarized_chunks}")
+        typer.echo(f"⏱️  Total processing time: {total_processing_time:.2f}s")
+        
+        # Show per-topic results
+        for topic, result in results.items():
+            stats = result.processing_stats
+            typer.echo(f"  • {topic}: {len(result.original_chunks)} chunks, {stats['overall_reduction_percent']:.1f}% reduction")
+        
+        typer.echo(f"\n📁 Output saved to: {output_dir}/{tool_name}/")
+        typer.echo(f"📄 Files created:")
+        for topic in results.keys():
+            typer.echo(f"  • {tool_name}/{topic}/{topic}.md")
+            typer.echo(f"  • {tool_name}/{topic}/{topic}.json")
+        typer.echo(f"  • {tool_name}/{tool_name}_summary.md")
+        
+    except ImportError as e:
+        typer.echo(f"❌ Error importing processor: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during processing: {e}")
+        raise typer.Exit(1)
+
+
 def _group_frameworks_by_ecosystem(frameworks: List) -> Dict[str, Dict[str, List]]:
     """
     Group frameworks by ecosystem and dependency type.
