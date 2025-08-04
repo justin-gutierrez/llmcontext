@@ -4,11 +4,23 @@ Main CLI application using Typer.
 
 import json
 import os
+import time
 import typer
 import requests
+import asyncio
 from pathlib import Path
 from typing import Optional, List, Dict, Union, Any
 from enum import Enum
+from datetime import datetime
+
+# Import configuration functions
+from ..config import get_config, get_model_config, update_model_config
+
+# Import core modules for documentation processing
+from ..core.collector import DocumentationCollector
+from ..core.chunker import DocumentationChunker
+from ..core.vectordb import VectorDatabase
+from ..summarizer import summarize as summarize_text
 
 # Sidecar server configuration
 SIDECAR_URL = "http://127.0.0.1:8001"
@@ -212,16 +224,98 @@ def init(
 
 
 @app.command()
+def config(
+    provider: Optional[str] = typer.Option(None, "--provider", "-p", help="Model provider (openai, ollama)"),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model name"),
+    show: bool = typer.Option(False, "--show", "-s", help="Show current configuration"),
+    list_providers: bool = typer.Option(False, "--list-providers", "-l", help="List supported providers")
+):
+    """
+    Configure model provider and model settings.
+    
+    Examples:
+        llmcontext config --provider ollama --model mistral
+        llmcontext config --show
+        llmcontext config --list-providers
+    """
+    if list_providers:
+        typer.echo("Supported providers:")
+        typer.echo("  openai - OpenAI API (requires OPENAI_API_KEY)")
+        typer.echo("  ollama - Local Ollama server (requires Ollama running)")
+        return
+    
+    if show:
+        try:
+            current_config = get_model_config()
+            typer.echo(f"Current configuration:")
+            typer.echo(f"  Provider: {current_config['provider']}")
+            typer.echo(f"  Model: {current_config['model']}")
+            
+            # Show full config
+            full_config = get_config()
+            typer.echo(f"\nFull configuration:")
+            typer.echo(f"  Stack: {full_config.get('stack', [])}")
+            typer.echo(f"  Model Provider: {full_config.get('model_provider', 'openai')}")
+            typer.echo(f"  Model Name: {full_config.get('model_name', 'gpt-4o-mini')}")
+            return
+        except Exception as e:
+            typer.echo(f"ERROR: Failed to load configuration: {e}")
+            raise typer.Exit(1)
+    
+    if provider is None and model is None:
+        typer.echo("ERROR: Must specify either --provider or --model, or use --show to view current config")
+        typer.echo("Use --help for more information")
+        raise typer.Exit(1)
+    
+    try:
+        # Get current configuration
+        current_config = get_model_config()
+        current_provider = current_config["provider"]
+        current_model = current_config["model"]
+        
+        # Update only specified values
+        new_provider = provider if provider is not None else current_provider
+        new_model = model if model is not None else current_model
+        
+        # Update configuration
+        update_model_config(new_provider, new_model)
+        
+        typer.echo(f"SUCCESS: Configuration updated")
+        typer.echo(f"  Provider: {current_provider} → {new_provider}")
+        typer.echo(f"  Model: {current_model} → {new_model}")
+        
+        # Validate configuration
+        if new_provider == "openai" and not os.getenv("OPENAI_API_KEY"):
+            typer.echo("WARNING: OpenAI provider selected but OPENAI_API_KEY not set")
+            typer.echo("  Set the environment variable: export OPENAI_API_KEY='your-key'")
+        
+        if new_provider == "ollama":
+            typer.echo("INFO: Ollama provider selected")
+            typer.echo("  Make sure Ollama is running: ollama serve")
+            typer.echo(f"  Ensure model '{new_model}' is available: ollama list")
+        
+    except Exception as e:
+        typer.echo(f"ERROR: Failed to update configuration: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def add(
     tool: Tool = typer.Argument(..., help="Tool/framework to add"),
     version: Optional[str] = typer.Option(None, "--version", "-v", help="Specific version to track"),
     config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
-    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available"),
+    skip_docs: bool = typer.Option(False, "--skip-docs", help="Skip documentation processing")
 ):
     """
     Add a tool/framework to the LLMContext configuration.
     
     Registers a framework for detection and documentation processing.
+    When adding a tool, this command will also:
+    1. Download raw documentation
+    2. Split into chunks
+    3. Summarize each chunk using the configured model provider
+    4. Save processed documentation to docs/<tool>/
     """
     if use_sidecar and check_sidecar_available():
         try:
@@ -262,14 +356,20 @@ def add(
         if existing_tool.startswith(f"{tool.value}@"):
             if existing_tool == tool_entry:
                 typer.echo(f"WARNING:  Tool '{tool_entry}' is already in the stack.")
-                return
+                if not skip_docs:
+                    typer.echo("PROCESSING: Re-processing documentation...")
+                else:
+                    return
             else:
                 # Update existing tool with new version
                 config["stack"].remove(existing_tool)
                 break
         elif existing_tool == tool.value and not version:
             typer.echo(f"WARNING:  Tool '{tool.value}' is already in the stack.")
-            return
+            if not skip_docs:
+                typer.echo("PROCESSING: Re-processing documentation...")
+            else:
+                return
     
     # Add tool to stack
     config["stack"].append(tool_entry)
@@ -279,6 +379,210 @@ def add(
         json.dump(config, f, indent=2)
     
     typer.echo(f"SUCCESS: Added '{tool_entry}' to stack.")
+    
+    # Process documentation if not skipped
+    if not skip_docs:
+        try:
+            typer.echo(f"PROCESSING: Starting documentation processing for {tool.value}...")
+            
+            # Get model configuration
+            model_config = get_model_config()
+            provider = model_config["provider"]
+            model_name = model_config["model"]
+            
+            typer.echo(f"MODEL: Using {provider} with model '{model_name}'")
+            
+            # Step 1: Collect raw documentation
+            typer.echo("STEP 1: Collecting raw documentation...")
+            collector = DocumentationCollector()
+            raw_docs_path = Path("raw_docs")
+            raw_docs_path.mkdir(exist_ok=True)
+            
+            raw_file_path = raw_docs_path / f"{tool.value}.md"
+            if raw_file_path.exists():
+                typer.echo("CACHE: Using cached raw documentation")
+            else:
+                typer.echo("DOWNLOAD: Downloading documentation...")
+                # Run the async collection function
+                success = asyncio.run(collector.collect_documentation(tool.value))
+                if success:
+                    typer.echo("SUCCESS: Raw documentation downloaded")
+                else:
+                    typer.echo("ERROR: Failed to download documentation")
+                    return
+            
+            # Step 2: Chunk the documentation
+            typer.echo("STEP 2: Chunking documentation...")
+            chunker = DocumentationChunker()
+            chunks_dir = Path("chunks") / tool.value
+            chunks_dir.mkdir(parents=True, exist_ok=True)
+            
+            chunks = chunker.chunk_file(Path(raw_file_path), chunks_dir)
+            typer.echo(f"SUCCESS: Documentation chunked into {len(chunks)} chunks")
+            
+            # Step 3: Process each chunk with summarization
+            typer.echo("STEP 3: Summarizing chunks...")
+            docs_dir = Path("docs") / tool.value
+            docs_dir.mkdir(parents=True, exist_ok=True)
+            
+            chunk_files = list(chunks_dir.glob("*.md"))
+            if not chunk_files:
+                typer.echo("WARNING: No chunk files found")
+                return
+            
+            # Initialize counters for final summary
+            successful_chunks = 0
+            failed_chunks = 0
+            start_time = time.time()
+            
+            typer.echo(f"SUMMARY: Starting summarization of {len(chunk_files)} chunks using {provider} ({model_name})")
+            typer.echo("-" * 60)
+            
+            for i, chunk_file in enumerate(chunk_files, 1):
+                chunk_start_time = time.time()
+                typer.echo(f"[{i:2d}/{len(chunk_files):2d}] STARTING: Processing {chunk_file.name}")
+                
+                # Read chunk content
+                with open(chunk_file, "r", encoding="utf-8") as f:
+                    chunk_content = f.read()
+                
+                # Create summarization prompt
+                prompt = f"""Here is a chunk of {tool.value} documentation. Please summarize it for LLM consumption:
+- Remove fluff and marketing
+- Focus on config, usage, errors, and examples
+- Output clean, concise Markdown
+- Preserve important code examples and configuration details
+
+---
+
+{chunk_content}"""
+                
+                try:
+                    # Summarize using configured provider
+                    summary = summarize_text(prompt)
+                    
+                    # Save summarized content
+                    output_file = docs_dir / f"chunk_{i}.md"
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(f"# {tool.value} Documentation - Chunk {i}\n\n")
+                        f.write(f"**Original File:** {chunk_file.name}\n\n")
+                        f.write(f"**Processed with:** {provider} ({model_name})\n\n")
+                        f.write("---\n\n")
+                        f.write(summary)
+                    
+                    chunk_time = time.time() - chunk_start_time
+                    successful_chunks += 1
+                    typer.echo(f"[{i:2d}/{len(chunk_files):2d}] SUCCESS: Chunk processed in {chunk_time:.1f}s -> {output_file.name}")
+                    
+                except Exception as e:
+                    chunk_time = time.time() - chunk_start_time
+                    failed_chunks += 1
+                    typer.echo(f"[{i:2d}/{len(chunk_files):2d}] ERROR: Failed to process chunk in {chunk_time:.1f}s: {e}")
+                    
+                    # Save original content as fallback
+                    output_file = docs_dir / f"chunk_{i}_original.md"
+                    with open(output_file, "w", encoding="utf-8") as f:
+                        f.write(f"# {tool.value} Documentation - Chunk {i} (Original)\n\n")
+                        f.write(f"**Original File:** {chunk_file.name}\n\n")
+                        f.write("---\n\n")
+                        f.write(chunk_content)
+                    typer.echo(f"[{i:2d}/{len(chunk_files):2d}] FALLBACK: Saved original content -> {output_file.name}")
+            
+            # Final summary
+            total_time = time.time() - start_time
+            typer.echo("-" * 60)
+            typer.echo(f"SUMMARY: Documentation processing completed for {tool.value}")
+            typer.echo(f"STATS: {successful_chunks} chunks summarized, {failed_chunks} chunks failed")
+            typer.echo(f"TIME: Total processing time: {total_time:.1f}s (avg: {total_time/len(chunk_files):.1f}s per chunk)")
+            typer.echo(f"OUTPUT: Processed docs saved to docs/{tool.value}/")
+            
+            if successful_chunks > 0:
+                typer.echo(f"SUCCESS: {successful_chunks} chunks successfully processed using {provider} ({model_name})")
+            if failed_chunks > 0:
+                typer.echo(f"WARNING: {failed_chunks} chunks failed and were saved as original content")
+            
+            # Step 4: Generate embeddings and store in ChromaDB
+            if successful_chunks > 0:
+                try:
+                    typer.echo("STEP 4: Generating embeddings and storing in vector database...")
+                    
+                    # Initialize vector database with sentence transformers (no API key required)
+                    vector_db = VectorDatabase(embedding_function="sentence_transformers")
+                    
+                    # Get processed doc files
+                    processed_files = list(docs_dir.glob("*.md"))
+                    if not processed_files:
+                        typer.echo("WARNING: No processed documentation files found for embedding")
+                        return
+                    
+                    typer.echo(f"EMBEDDING: Processing {len(processed_files)} files for vector storage")
+                    typer.echo(f"MODEL: Using sentence transformers for embeddings (no API key required)")
+                    
+                    # Initialize embedding counters
+                    successful_embeddings = 0
+                    failed_embeddings = 0
+                    embedding_start_time = time.time()
+                    
+                    for i, doc_file in enumerate(processed_files, 1):
+                        embedding_chunk_start_time = time.time()
+                        typer.echo(f"[{i:2d}/{len(processed_files):2d}] EMBEDDING: Processing {doc_file.name}")
+                        
+                        try:
+                            # Read the processed content
+                            with open(doc_file, "r", encoding="utf-8") as f:
+                                content = f.read()
+                            
+                            # Extract chunk ID from filename
+                            chunk_id = doc_file.stem  # e.g., "chunk_1" from "chunk_1.md"
+                            
+                            # Create metadata for the embedding
+                            metadata = {
+                                "tool": tool.value,
+                                "topic": chunk_id,
+                                "file_path": str(doc_file),
+                                "source_chunk": chunk_id,
+                                "processed_with": f"{provider} ({model_name})",
+                                "timestamp": datetime.now().isoformat()
+                            }
+                            
+                            # Add to vector database (ChromaDB will generate embeddings automatically)
+                            vector_db.collection.add(
+                                documents=[content],
+                                metadatas=[metadata],
+                                ids=[f"{tool.value}_{chunk_id}"]
+                            )
+                            
+                            embedding_chunk_time = time.time() - embedding_chunk_start_time
+                            successful_embeddings += 1
+                            typer.echo(f"[{i:2d}/{len(processed_files):2d}] SUCCESS: Embedding stored in {embedding_chunk_time:.1f}s -> {chunk_id}")
+                            
+                        except Exception as e:
+                            embedding_chunk_time = time.time() - embedding_chunk_start_time
+                            failed_embeddings += 1
+                            typer.echo(f"[{i:2d}/{len(processed_files):2d}] ERROR: Failed to embed in {embedding_chunk_time:.1f}s: {e}")
+                    
+                    # Final embedding summary
+                    embedding_total_time = time.time() - embedding_start_time
+                    typer.echo("-" * 60)
+                    typer.echo(f"EMBEDDING SUMMARY: Vector storage completed for {tool.value}")
+                    typer.echo(f"STATS: {successful_embeddings} embeddings stored, {failed_embeddings} failed")
+                    typer.echo(f"TIME: Total embedding time: {embedding_total_time:.1f}s (avg: {embedding_total_time/len(processed_files):.1f}s per file)")
+                    typer.echo(f"STORAGE: Embeddings stored in ChromaDB collection: {vector_db.collection_name}")
+                    
+                    if successful_embeddings > 0:
+                        typer.echo(f"SUCCESS: {successful_embeddings} embeddings successfully stored in vector database")
+                    if failed_embeddings > 0:
+                        typer.echo(f"WARNING: {failed_embeddings} embeddings failed to store")
+                        
+                except Exception as e:
+                    typer.echo(f"ERROR: Embedding generation failed: {e}")
+                    typer.echo("Documentation was processed, but embedding failed.")
+                    typer.echo("You can run 'llmcontext embed' manually to generate embeddings.")
+            
+        except Exception as e:
+            typer.echo(f"ERROR: Documentation processing failed: {e}")
+            typer.echo("Tool was added to stack, but documentation processing failed.")
+            typer.echo("You can run 'llmcontext collect {tool.value}' and 'llmcontext chunk' manually.")
     
     # Show next steps
     typer.echo(f"SEARCH: Run 'llmcontext detect' to scan for {tool.value} in your codebase.")
@@ -1317,9 +1621,16 @@ def vectordb(
             topics_list = [t.strip() for t in topics.split(",")]
         
         # Initialize vector database
+        # Use sentence transformers if no API key is provided
+        embedding_function = None
+        if not api_key and not os.getenv("OPENAI_API_KEY"):
+            embedding_function = "sentence_transformers"
+            typer.echo("INFO: Using sentence transformers for embeddings (no API key required)")
+        
         db = VectorDatabase(
             persist_directory=persist_dir,
             collection_name=collection_name,
+            embedding_function=embedding_function,
             api_key=api_key
         )
         
