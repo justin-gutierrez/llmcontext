@@ -312,6 +312,70 @@ def detect(
         raise typer.Exit(1)
 
 
+@app.command()
+def collect(
+    tool: Optional[str] = typer.Argument(None, help="Tool name to collect documentation for"),
+    all_tools: bool = typer.Option(False, "--all", "-a", help="Collect documentation for all available tools"),
+    force_refresh: bool = typer.Option(False, "--force", "-f", help="Force refresh existing documentation"),
+    list_tools: bool = typer.Option(False, "--list", "-l", help="List all available tools for documentation collection")
+):
+    """Collect documentation for tools and frameworks."""
+    import asyncio
+    
+    try:
+        from llmcontext.core.collector import DocumentationCollector
+        
+        collector = DocumentationCollector()
+        
+        if list_tools:
+            available_tools = collector.get_available_tools()
+            typer.echo(f"Available tools for documentation collection ({len(available_tools)}):")
+            for tool_name in sorted(available_tools):
+                typer.echo(f"  • {tool_name}")
+            return
+        
+        if all_tools:
+            typer.echo("Collecting documentation for all available tools...")
+            results = asyncio.run(collector.collect_all_documentation(force_refresh))
+            
+            successful = [name for name, success in results.items() if success]
+            failed = [name for name, success in results.items() if not success]
+            
+            typer.echo(f"\n✅ Successfully collected documentation for {len(successful)} tools:")
+            for tool_name in successful:
+                typer.echo(f"  • {tool_name}")
+            
+            if failed:
+                typer.echo(f"\n❌ Failed to collect documentation for {len(failed)} tools:")
+                for tool_name in failed:
+                    typer.echo(f"  • {tool_name}")
+            
+            return
+        
+        if not tool:
+            typer.echo("❌ Please specify a tool name or use --all to collect for all tools")
+            typer.echo("Use --list to see available tools")
+            raise typer.Exit(1)
+        
+        typer.echo(f"Collecting documentation for {tool}...")
+        success = asyncio.run(collector.collect_documentation(tool, force_refresh))
+        
+        if success:
+            typer.echo(f"✅ Successfully collected documentation for {tool}")
+            typer.echo(f"📁 Documentation saved to: raw_docs/{tool}.md")
+        else:
+            typer.echo(f"❌ Failed to collect documentation for {tool}")
+            typer.echo("Use --list to see available tools")
+            raise typer.Exit(1)
+            
+    except ImportError as e:
+        typer.echo(f"❌ Error importing collector: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during collection: {e}")
+        raise typer.Exit(1)
+
+
 def _group_frameworks_by_ecosystem(frameworks: List) -> Dict[str, Dict[str, List]]:
     """
     Group frameworks by ecosystem and dependency type.
