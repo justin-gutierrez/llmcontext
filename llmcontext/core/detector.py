@@ -18,6 +18,7 @@ class DetectedFramework:
     confidence: float
     files: List[str]
     metadata: Dict[str, Any]
+    tags: List[str]
 
 
 class FrameworkDetector:
@@ -36,6 +37,286 @@ class FrameworkDetector:
             "elixir": ["mix.exs"],
             "haskell": ["stack.yaml", "*.cabal"],
             "docker": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml"],
+        }
+        
+        # Framework inference rules based on config files and project structure
+        self.framework_inference_rules = {
+            # JavaScript/TypeScript frameworks
+            "next.config.js": "nextjs",
+            "next.config.ts": "nextjs",
+            "next.config.mjs": "nextjs",
+            "nuxt.config.js": "nuxt",
+            "nuxt.config.ts": "nuxt",
+            "vite.config.js": "vite",
+            "vite.config.ts": "vite",
+            "svelte.config.js": "sveltekit",
+            "svelte.config.ts": "sveltekit",
+            "angular.json": "angular",
+            "remix.config.js": "remix",
+            "remix.config.ts": "remix",
+            "astro.config.js": "astro",
+            "astro.config.mjs": "astro",
+            "astro.config.ts": "astro",
+            
+            # Python frameworks
+            "manage.py": "django",
+            "settings.py": "django",
+            "urls.py": "django",
+            "wsgi.py": "django",
+            "asgi.py": "django",
+            "app.py": "flask",
+            "main.py": "fastapi",
+            
+            # Java frameworks
+            "application.properties": "spring-boot",
+            "application.yml": "spring-boot",
+            "application.yaml": "spring-boot",
+            "bootstrap.properties": "spring-boot",
+            "bootstrap.yml": "spring-boot",
+            
+            # Other frameworks
+            "gatsby-config.js": "gatsby",
+            "gatsby-config.ts": "gatsby",
+            "vue.config.js": "vue",
+            "vue.config.ts": "vue",
+            "quasar.config.js": "quasar",
+            "quasar.config.ts": "quasar",
+            "capacitor.config.ts": "capacitor",
+            "capacitor.config.js": "capacitor",
+        }
+        
+        # Framework classification tags mapping
+        self.framework_tags = {
+            # Python Web Frameworks
+            "fastapi": ["web", "api", "async"],
+            "django": ["web", "orm", "backend"],
+            "flask": ["web", "api", "backend"],
+            "uvicorn": ["web", "async", "server"],
+            "gunicorn": ["web", "server"],
+            "starlette": ["web", "async"],
+            
+            # Python API & HTTP
+            "requests": ["api", "http"],
+            "httpx": ["api", "http", "async"],
+            "aiohttp": ["api", "http", "async"],
+            "urllib3": ["api", "http"],
+            
+            # Python Data & ORM
+            "sqlalchemy": ["orm", "database"],
+            "alembic": ["database", "migration"],
+            "django-orm": ["orm", "database"],
+            "peewee": ["orm", "database"],
+            "tortoise-orm": ["orm", "database", "async"],
+            
+            # Python Testing
+            "pytest": ["testing"],
+            "unittest": ["testing"],
+            "nose": ["testing"],
+            "coverage": ["testing", "devtool"],
+            "tox": ["testing", "devtool"],
+            "pytest-asyncio": ["testing", "async"],
+            "pytest-django": ["testing", "web"],
+            "factory-boy": ["testing"],
+            "faker": ["testing"],
+            
+            # Python Development Tools
+            "black": ["devtool", "formatting"],
+            "isort": ["devtool", "formatting"],
+            "flake8": ["devtool", "linting"],
+            "pylint": ["devtool", "linting"],
+            "mypy": ["devtool", "linting", "typing"],
+            "bandit": ["devtool", "security"],
+            "pre-commit": ["devtool"],
+            "poetry": ["devtool", "packaging"],
+            "pip": ["devtool", "packaging"],
+            
+            # Python CLI & Utilities
+            "click": ["cli"],
+            "typer": ["cli"],
+            "argparse": ["cli"],
+            "rich": ["cli", "ui"],
+            "tqdm": ["cli", "ui"],
+            "colorama": ["cli", "ui"],
+            
+            # Python Data Science & ML
+            "numpy": ["data", "scientific"],
+            "pandas": ["data", "scientific"],
+            "matplotlib": ["data", "visualization"],
+            "seaborn": ["data", "visualization"],
+            "scikit-learn": ["ai", "ml"],
+            "tensorflow": ["ai", "ml"],
+            "pytorch": ["ai", "ml"],
+            "jupyter": ["data", "scientific"],
+            
+            # Python Async & Concurrency
+            "asyncio": ["async"],
+            "aiofiles": ["async", "file"],
+            "aio-pika": ["async", "message"],
+            "celery": ["async", "task"],
+            
+            # JavaScript Frontend Frameworks
+            "react": ["frontend", "web", "ui"],
+            "vue": ["frontend", "web", "ui"],
+            "angular": ["frontend", "web", "ui"],
+            "svelte": ["frontend", "web", "ui"],
+            "next": ["frontend", "web", "ssr"],
+            "nuxt": ["frontend", "web", "ssr"],
+            "gatsby": ["frontend", "web", "ssg"],
+            "remix": ["frontend", "web", "ssr"],
+            "astro": ["frontend", "web", "ssg"],
+            
+            # JavaScript Backend & API
+            "express": ["backend", "api", "web"],
+            "koa": ["backend", "api", "web"],
+            "fastify": ["backend", "api", "web"],
+            "nest": ["backend", "api", "web"],
+            "hapi": ["backend", "api", "web"],
+            
+            # JavaScript Database & ORM
+            "prisma": ["orm", "database"],
+            "sequelize": ["orm", "database"],
+            "typeorm": ["orm", "database"],
+            "mongoose": ["orm", "database"],
+            "knex": ["orm", "database"],
+            
+            # JavaScript Testing
+            "jest": ["testing"],
+            "mocha": ["testing"],
+            "vitest": ["testing"],
+            "cypress": ["testing", "e2e"],
+            "playwright": ["testing", "e2e"],
+            "testing-library": ["testing"],
+            
+            # JavaScript Development Tools
+            "typescript": ["devtool", "typing"],
+            "eslint": ["devtool", "linting"],
+            "prettier": ["devtool", "formatting"],
+            "webpack": ["devtool", "bundling"],
+            "vite": ["devtool", "bundling"],
+            "rollup": ["devtool", "bundling"],
+            "parcel": ["devtool", "bundling"],
+            "babel": ["devtool", "transpiling"],
+            
+            # JavaScript Styling
+            "tailwindcss": ["styling", "css"],
+            "styled-components": ["styling", "css"],
+            "emotion": ["styling", "css"],
+            "sass": ["styling", "css"],
+            "less": ["styling", "css"],
+            "postcss": ["styling", "css"],
+            
+            # JavaScript State Management
+            "redux": ["state", "frontend"],
+            "zustand": ["state", "frontend"],
+            "mobx": ["state", "frontend"],
+            "recoil": ["state", "frontend"],
+            
+            # Java Frameworks
+            "spring": ["web", "backend", "api"],
+            "spring-boot": ["web", "backend", "api"],
+            "spring-mvc": ["web", "backend", "api"],
+            "spring-data": ["orm", "database"],
+            "hibernate": ["orm", "database"],
+            "jpa": ["orm", "database"],
+            
+            # Java Testing
+            "junit": ["testing"],
+            "testng": ["testing"],
+            "mockito": ["testing"],
+            "selenium": ["testing", "e2e"],
+            
+            # Java Build Tools
+            "maven": ["devtool", "build"],
+            "gradle": ["devtool", "build"],
+            "ant": ["devtool", "build"],
+            
+            # Ruby Frameworks
+            "rails": ["web", "backend", "orm"],
+            "sinatra": ["web", "api"],
+            "hanami": ["web", "backend"],
+            
+            # Ruby Testing
+            "rspec": ["testing"],
+            "minitest": ["testing"],
+            "cucumber": ["testing", "bdd"],
+            
+            # PHP Frameworks
+            "laravel": ["web", "backend", "orm"],
+            "symfony": ["web", "backend", "orm"],
+            "codeigniter": ["web", "backend"],
+            "slim": ["web", "api"],
+            
+            # PHP Testing
+            "phpunit": ["testing"],
+            "behat": ["testing", "bdd"],
+            
+            # Go Frameworks
+            "gin": ["web", "api"],
+            "echo": ["web", "api"],
+            "fiber": ["web", "api"],
+            "gorilla": ["web", "api"],
+            
+            # Go Database
+            "gorm": ["orm", "database"],
+            "sqlx": ["database"],
+            
+            # Go Testing
+            "testify": ["testing"],
+            
+            # Rust Frameworks
+            "actix": ["web", "api"],
+            "rocket": ["web", "api"],
+            "warp": ["web", "api"],
+            "axum": ["web", "api"],
+            
+            # Rust Database
+            "diesel": ["orm", "database"],
+            "sqlx": ["database"],
+            
+            # Rust Testing
+            "criterion": ["testing", "benchmark"],
+            
+            # .NET Frameworks
+            "aspnet": ["web", "api"],
+            "aspnet-core": ["web", "api"],
+            "entity-framework": ["orm", "database"],
+            "nhibernate": ["orm", "database"],
+            
+            # .NET Testing
+            "nunit": ["testing"],
+            "xunit": ["testing"],
+            "moq": ["testing"],
+            
+            # Infrastructure & Cloud
+            "docker": ["infra", "container"],
+            "kubernetes": ["infra", "container", "orchestration"],
+            "terraform": ["infra", "iac"],
+            "ansible": ["infra", "automation"],
+            "helm": ["infra", "kubernetes"],
+            
+            # Cloud Platforms
+            "aws": ["cloud", "infra"],
+            "azure": ["cloud", "infra"],
+            "gcp": ["cloud", "infra"],
+            "heroku": ["cloud", "platform"],
+            
+            # Message Queues & Event Systems
+            "redis": ["cache", "message"],
+            "rabbitmq": ["message", "queue"],
+            "kafka": ["message", "stream"],
+            "celery": ["task", "queue"],
+            
+            # Monitoring & Logging
+            "prometheus": ["monitoring", "metrics"],
+            "grafana": ["monitoring", "visualization"],
+            "elk": ["logging", "search"],
+            "sentry": ["monitoring", "error"],
+            
+            # Security
+            "jwt": ["security", "auth"],
+            "oauth": ["security", "auth"],
+            "bcrypt": ["security", "crypto"],
+            "cryptography": ["security", "crypto"],
         }
     
     def detect_frameworks(self, codebase_path: Path) -> List[DetectedFramework]:
@@ -77,6 +358,10 @@ class FrameworkDetector:
                 detected_frameworks.extend(self._analyze_haskell_frameworks(files))
             elif framework_type == "docker":
                 detected_frameworks.extend(self._analyze_docker_frameworks(files))
+        
+        # Infer frameworks based on project structure and config files
+        inferred_frameworks = self._infer_frameworks_from_structure(codebase_path)
+        detected_frameworks.extend(inferred_frameworks)
         
         return detected_frameworks
     
@@ -209,6 +494,256 @@ class FrameworkDetector:
         
         return detected
     
+    def _infer_frameworks_from_structure(self, codebase_path: Path) -> List[DetectedFramework]:
+        """
+        Infer frameworks based on project structure and config files.
+        
+        Args:
+            codebase_path: Path to the codebase to analyze
+            
+        Returns:
+            List of inferred frameworks
+        """
+        inferred_frameworks = []
+        
+        # Scan for framework-specific config files
+        for filename, framework_name in self.framework_inference_rules.items():
+            # Handle glob patterns
+            if '*' in filename:
+                pattern = filename.replace('*', '**')
+                matching_files = list(codebase_path.rglob(pattern))
+            else:
+                matching_files = list(codebase_path.rglob(filename))
+            
+            for file_path in matching_files:
+                # Skip if file is in common exclude directories
+                if any(exclude in str(file_path) for exclude in ['node_modules', '__pycache__', '.git', 'dist', 'build']):
+                    continue
+                
+                # Try to extract version from the file content
+                version = self._extract_version_from_config_file(file_path, framework_name)
+                
+                inferred_frameworks.append(DetectedFramework(
+                    name=framework_name,
+                    version=version,
+                    confidence=0.6,  # Lower confidence for inferred frameworks
+                    files=[str(file_path)],
+                    metadata={
+                        "source": "inferred",
+                        "inferred": True,
+                        "config_file": filename,
+                        "framework_type": "config_based"
+                    },
+                    tags=self._get_framework_tags(framework_name)
+                ))
+        
+        # Additional inference based on file content analysis
+        content_based_inferences = self._infer_from_file_content(codebase_path)
+        inferred_frameworks.extend(content_based_inferences)
+        
+        return inferred_frameworks
+    
+    def _extract_version_from_config_file(self, file_path: Path, framework_name: str) -> Optional[str]:
+        """
+        Try to extract version information from config files.
+        
+        Args:
+            file_path: Path to the config file
+            framework_name: Name of the framework
+            
+        Returns:
+            Version string if found, None otherwise
+        """
+        try:
+            content = file_path.read_text(encoding='utf-8')
+            
+            # Framework-specific version extraction patterns
+            version_patterns = {
+                "nextjs": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "nuxt": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "vite": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "sveltekit": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "angular": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "remix": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "astro": [
+                    r'"version":\s*["\']([^"\']+)["\']',
+                    r'version:\s*["\']([^"\']+)["\']',
+                ],
+                "django": [
+                    r'VERSION\s*=\s*["\']([^"\']+)["\']',
+                    r'version\s*=\s*["\']([^"\']+)["\']',
+                ],
+                "flask": [
+                    r'__version__\s*=\s*["\']([^"\']+)["\']',
+                    r'version\s*=\s*["\']([^"\']+)["\']',
+                ],
+                "fastapi": [
+                    r'__version__\s*=\s*["\']([^"\']+)["\']',
+                    r'version\s*=\s*["\']([^"\']+)["\']',
+                ],
+                "spring-boot": [
+                    r'spring\.boot\.version\s*=\s*([^\s]+)',
+                    r'version\s*=\s*([^\s]+)',
+                ],
+            }
+            
+            patterns = version_patterns.get(framework_name, [])
+            for pattern in patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+            
+            # Generic version patterns
+            generic_patterns = [
+                r'"version":\s*["\']([^"\']+)["\']',
+                r'version:\s*["\']([^"\']+)["\']',
+                r'VERSION\s*=\s*["\']([^"\']+)["\']',
+                r'__version__\s*=\s*["\']([^"\']+)["\']',
+            ]
+            
+            for pattern in generic_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+                    
+        except Exception as e:
+            print(f"Error extracting version from {file_path}: {e}")
+        
+        return None
+    
+    def _infer_from_file_content(self, codebase_path: Path) -> List[DetectedFramework]:
+        """
+        Infer frameworks by analyzing file content for framework-specific patterns.
+        
+        Args:
+            codebase_path: Path to the codebase to analyze
+            
+        Returns:
+            List of inferred frameworks
+        """
+        inferred_frameworks = []
+        
+        # Content-based inference patterns
+        content_patterns = {
+            "react": [
+                (r'import\s+React', "*.js", "*.jsx", "*.ts", "*.tsx"),
+                (r'from\s+["\']react["\']', "*.js", "*.jsx", "*.ts", "*.tsx"),
+                (r'ReactDOM\.render', "*.js", "*.jsx", "*.ts", "*.tsx"),
+            ],
+            "vue": [
+                (r'import\s+{.*}\s+from\s+["\']vue["\']', "*.js", "*.ts", "*.vue"),
+                (r'Vue\.createApp', "*.js", "*.ts", "*.vue"),
+                (r'<template>', "*.vue"),
+            ],
+            "angular": [
+                (r'@Component', "*.ts"),
+                (r'import\s+{.*}\s+from\s+["\']@angular', "*.ts"),
+                (r'@Injectable', "*.ts"),
+            ],
+            "svelte": [
+                (r'<script>', "*.svelte"),
+                (r'import\s+{.*}\s+from\s+["\']svelte', "*.svelte", "*.js", "*.ts"),
+            ],
+            "tailwind": [
+                (r'@tailwind', "*.css", "*.scss", "*.sass"),
+                (r'tailwindcss', "*.js", "*.ts", "*.json"),
+            ],
+            "bootstrap": [
+                (r'@import\s+["\']bootstrap', "*.css", "*.scss", "*.sass"),
+                (r'bootstrap', "*.js", "*.ts", "*.json"),
+            ],
+        }
+        
+        for framework_name, patterns in content_patterns.items():
+            for pattern, *file_extensions in patterns:
+                for ext in file_extensions:
+                    matching_files = list(codebase_path.rglob(ext))
+                    for file_path in matching_files:
+                        # Skip common exclude directories
+                        if any(exclude in str(file_path) for exclude in ['node_modules', '__pycache__', '.git', 'dist', 'build']):
+                            continue
+                        
+                        try:
+                            content = file_path.read_text(encoding='utf-8')
+                            if re.search(pattern, content, re.IGNORECASE):
+                                inferred_frameworks.append(DetectedFramework(
+                                    name=framework_name,
+                                    version=None,
+                                    confidence=0.5,  # Lower confidence for content-based inference
+                                    files=[str(file_path)],
+                                    metadata={
+                                        "source": "inferred",
+                                        "inferred": True,
+                                        "inference_type": "content_pattern",
+                                        "pattern": pattern,
+                                        "framework_type": "content_based"
+                                    },
+                                    tags=self._get_framework_tags(framework_name)
+                                ))
+                                break  # Found one match, no need to check other files
+                        except Exception as e:
+                            continue
+        
+        return inferred_frameworks
+    
+    def _get_framework_tags(self, framework_name: str) -> List[str]:
+        """
+        Get classification tags for a framework.
+        
+        Args:
+            framework_name: Name of the framework
+            
+        Returns:
+            List of tags for the framework
+        """
+        # Clean the framework name (remove version info, brackets, etc.)
+        clean_name = framework_name.lower()
+        
+        # Remove common suffixes and prefixes
+        clean_name = re.sub(r'\[.*?\]', '', clean_name)  # Remove [standard], [all], etc.
+        clean_name = clean_name.strip()
+        
+        # Check exact match first
+        if clean_name in self.framework_tags:
+            return self.framework_tags[clean_name]
+        
+        # Check for partial matches (for cases like "fastapi" vs "fastapi[standard]")
+        for key, tags in self.framework_tags.items():
+            if clean_name.startswith(key) or key in clean_name:
+                return tags
+        
+        # Check for common patterns
+        if any(pattern in clean_name for pattern in ["test", "pytest", "jest", "mocha", "junit"]):
+            return ["testing"]
+        elif any(pattern in clean_name for pattern in ["lint", "flake", "eslint", "pylint"]):
+            return ["devtool", "linting"]
+        elif any(pattern in clean_name for pattern in ["format", "black", "prettier"]):
+            return ["devtool", "formatting"]
+        elif any(pattern in clean_name for pattern in ["orm", "sqlalchemy", "prisma"]):
+            return ["orm", "database"]
+        elif any(pattern in clean_name for pattern in ["web", "http", "api"]):
+            return ["web", "api"]
+        
+        return []
+    
     # Parsing methods for different file types
     def _parse_requirements_txt(self, file_path: Path) -> List[DetectedFramework]:
         """Parse requirements.txt file."""
@@ -239,7 +774,8 @@ class FrameworkDetector:
                         version=version.strip() if version else None,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "requirements.txt"}
+                        metadata={"source": "requirements.txt"},
+                        tags=self._get_framework_tags(name)
                     ))
         
         return detected
@@ -261,7 +797,8 @@ class FrameworkDetector:
                         version=version,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "pyproject.toml"}
+                        metadata={"source": "pyproject.toml"},
+                        tags=self._get_framework_tags(name)
                     ))
             
             # Check optional dependencies
@@ -274,7 +811,8 @@ class FrameworkDetector:
                             version=version,
                             confidence=0.8,
                             files=[str(file_path)],
-                            metadata={"source": "pyproject.toml", "group": group}
+                            metadata={"source": "pyproject.toml", "group": group},
+                            tags=self._get_framework_tags(name)
                         ))
                         
         except Exception as e:
@@ -302,7 +840,8 @@ class FrameworkDetector:
                     version=version,
                     confidence=0.8,
                     files=[str(file_path)],
-                    metadata={"source": "setup.py"}
+                    metadata={"source": "setup.py"},
+                    tags=self._get_framework_tags(name)
                 ))
         
         return detected
@@ -324,7 +863,8 @@ class FrameworkDetector:
                         version=version if version != '*' else None,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "Pipfile"}
+                        metadata={"source": "Pipfile"},
+                        tags=self._get_framework_tags(name)
                     ))
                         
         except Exception as e:
@@ -349,7 +889,8 @@ class FrameworkDetector:
                             version=version if version != '*' else None,
                             confidence=0.9 if dep_type == 'dependencies' else 0.7,
                             files=[str(file_path)],
-                            metadata={"source": "package.json", "type": dep_type}
+                            metadata={"source": "package.json", "type": dep_type},
+                            tags=self._get_framework_tags(name)
                         ))
                         
         except Exception as e:
@@ -378,7 +919,8 @@ class FrameworkDetector:
                         version=version if version != '*' else None,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "Cargo.toml"}
+                        metadata={"source": "Cargo.toml"},
+                        tags=self._get_framework_tags(name)
                     ))
                         
         except Exception as e:
@@ -401,7 +943,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=0.9,
                 files=[str(file_path)],
-                metadata={"source": "go.mod"}
+                metadata={"source": "go.mod"},
+                tags=self._get_framework_tags(name)
             ))
         
         return detected
@@ -422,7 +965,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=0.8,
                 files=[str(file_path)],
-                metadata={"source": "pom.xml", "groupId": group_id, "artifactId": artifact_id}
+                metadata={"source": "pom.xml", "groupId": group_id, "artifactId": artifact_id},
+                tags=self._get_framework_tags(artifact_id)  # Use artifact_id for better tag matching
             ))
         
         return detected
@@ -447,7 +991,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=0.8,
                 files=[str(file_path)],
-                metadata={"source": "build.gradle"}
+                metadata={"source": "build.gradle"},
+                tags=self._get_framework_tags(name)
             ))
         
         return detected
@@ -497,7 +1042,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=confidence,
                 files=[str(file_path)],
-                metadata={"source": "Gemfile"}
+                metadata={"source": "Gemfile"},
+                tags=self._get_framework_tags(name)
             ))
         
         return detected
@@ -517,7 +1063,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=0.9,
                 files=[str(file_path)],
-                metadata={"source": "Gemfile.lock"}
+                metadata={"source": "Gemfile.lock"},
+                tags=self._get_framework_tags(name)
             ))
         
         return detected
@@ -541,7 +1088,8 @@ class FrameworkDetector:
                             version=version if version != '*' else None,
                             confidence=confidence,
                             files=[str(file_path)],
-                            metadata={"source": "composer.json", "type": section}
+                            metadata={"source": "composer.json", "type": section},
+                            tags=self._get_framework_tags(name)
                         ))
                         
         except Exception as e:
@@ -568,7 +1116,8 @@ class FrameworkDetector:
                         version=version,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "composer.lock"}
+                        metadata={"source": "composer.lock"},
+                        tags=self._get_framework_tags(name)
                     ))
                         
         except Exception as e:
@@ -592,7 +1141,8 @@ class FrameworkDetector:
                 version=version,
                 confidence=0.9,
                 files=[str(file_path)],
-                metadata={"source": ".csproj"}
+                metadata={"source": ".csproj"},
+                tags=self._get_framework_tags(name)
             ))
         
         # Parse ProjectReference elements
@@ -607,7 +1157,8 @@ class FrameworkDetector:
                 version=None,
                 confidence=0.8,
                 files=[str(file_path)],
-                metadata={"source": ".csproj", "type": "project_reference"}
+                metadata={"source": ".csproj", "type": "project_reference"},
+                tags=self._get_framework_tags(project_name)
             ))
         
         return detected
@@ -627,7 +1178,8 @@ class FrameworkDetector:
                     version=data['sdk']['version'],
                     confidence=0.9,
                     files=[str(file_path)],
-                    metadata={"source": "global.json"}
+                    metadata={"source": "global.json"},
+                    tags=self._get_framework_tags("dotnet-sdk")
                 ))
                         
         except Exception as e:
@@ -661,7 +1213,8 @@ class FrameworkDetector:
                     version=version,
                     confidence=0.9,
                     files=[str(file_path)],
-                    metadata={"source": "mix.exs"}
+                    metadata={"source": "mix.exs"},
+                    tags=self._get_framework_tags(name)
                 ))
         
         return detected
@@ -695,7 +1248,8 @@ class FrameworkDetector:
                         version=version,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": "stack.yaml"}
+                        metadata={"source": "stack.yaml"},
+                        tags=self._get_framework_tags(name)
                     ))
                         
         except Exception as e:
@@ -731,7 +1285,8 @@ class FrameworkDetector:
                         version=version,
                         confidence=0.9,
                         files=[str(file_path)],
-                        metadata={"source": ".cabal"}
+                        metadata={"source": ".cabal"},
+                        tags=self._get_framework_tags(name)
                     ))
         
         return detected
@@ -755,7 +1310,8 @@ class FrameworkDetector:
                 version=tag,
                 confidence=0.9,
                 files=[str(file_path)],
-                metadata={"source": "Dockerfile", "type": "base_image"}
+                metadata={"source": "Dockerfile", "type": "base_image"},
+                tags=self._get_framework_tags(image)
             ))
         
         # Parse RUN statements for package managers
@@ -774,7 +1330,8 @@ class FrameworkDetector:
                             version=None,
                             confidence=0.8,
                             files=[str(file_path)],
-                            metadata={"source": "Dockerfile", "type": "apt_package"}
+                            metadata={"source": "Dockerfile", "type": "apt_package"},
+                            tags=self._get_framework_tags(pkg)
                         ))
             
             elif 'pip install' in run_cmd:
@@ -788,7 +1345,8 @@ class FrameworkDetector:
                                 version=None,
                                 confidence=0.8,
                                 files=[str(file_path)],
-                                metadata={"source": "Dockerfile", "type": "pip_package"}
+                                metadata={"source": "Dockerfile", "type": "pip_package"},
+                                tags=self._get_framework_tags(pkg)
                             ))
         
         return detected
@@ -818,7 +1376,8 @@ class FrameworkDetector:
                                 version=version,
                                 confidence=0.9,
                                 files=[str(file_path)],
-                                metadata={"source": "docker-compose.yml", "service": service_name}
+                                metadata={"source": "docker-compose.yml", "service": service_name},
+                                tags=self._get_framework_tags(name)
                             ))
                         
                         # Get build context
@@ -829,7 +1388,8 @@ class FrameworkDetector:
                                 version=None,
                                 confidence=0.8,
                                 files=[str(file_path)],
-                                metadata={"source": "docker-compose.yml", "type": "build_context", "service": service_name}
+                                metadata={"source": "docker-compose.yml", "type": "build_context", "service": service_name},
+                                tags=self._get_framework_tags(service_name)
                             ))
                         
         except Exception as e:

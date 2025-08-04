@@ -5,7 +5,7 @@ Main CLI application using Typer.
 import json
 import typer
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 from enum import Enum
 
 app = typer.Typer(
@@ -254,7 +254,7 @@ def detect(
         typer.echo("Run 'llmcontext init' to create a configuration file.")
         raise typer.Exit(1)
     
-    typer.echo("🔍 Scanning codebase for frameworks and libraries...")
+    typer.echo("Scanning codebase for frameworks and libraries...")
     
     try:
         from llmcontext.core.detector import FrameworkDetector
@@ -263,31 +263,46 @@ def detect(
         detected_frameworks = detector.detect_frameworks(Path.cwd())
         
         if not detected_frameworks:
-            typer.echo("📭 No frameworks or libraries detected in the current codebase.")
+            typer.echo("No frameworks or libraries detected in the current codebase.")
             return
         
-        typer.echo(f"✅ Found {len(detected_frameworks)} frameworks/libraries:")
-        typer.echo()
+        # Group frameworks by ecosystem and dependency type
+        ecosystem_groups = _group_frameworks_by_ecosystem(detected_frameworks)
         
-        # Group by source file for better display
-        by_source = {}
-        for framework in detected_frameworks:
-            source = framework.metadata.get("source", "unknown")
-            if source not in by_source:
-                by_source[source] = []
-            by_source[source].append(framework)
+        # Display grouped results
+        total_files = len(set(f.metadata.get("source", "unknown") for f in detected_frameworks))
         
-        for source, frameworks in by_source.items():
-            typer.echo(f"📁 {source}:")
-            for framework in frameworks:
-                version_info = f" (v{framework.version})" if framework.version else ""
-                confidence = f" [{framework.confidence:.1f}]" if framework.confidence < 0.9 else ""
-                typer.echo(f"  • {framework.name}{version_info}{confidence}")
+        for ecosystem, groups in ecosystem_groups.items():
+            if not groups:  # Skip empty ecosystems
+                continue
+                
+            typer.echo(f"📦 {ecosystem} Frameworks")
+            
+            # Show main dependencies first
+            if "main" in groups and groups["main"]:
+                for framework in groups["main"]:
+                    _display_framework(framework)
+            
+            # Show dev dependencies
+            if "dev" in groups and groups["dev"]:
+                typer.echo("  🧪 Dev Tools")
+                for framework in groups["dev"]:
+                    _display_framework(framework, indent="    ")
+            
+            # Show inferred frameworks
+            if "inferred" in groups and groups["inferred"]:
+                typer.echo("  🔍 Inferred")
+                for framework in groups["inferred"]:
+                    _display_framework(framework, indent="    ")
+            
+            # Show ecosystem summary
+            ecosystem_count = sum(len(frameworks) for frameworks in groups.values())
+            typer.echo(f"  └─ {ecosystem_count} frameworks detected")
             typer.echo()
         
-        # Show summary
+        # Show overall summary
         unique_frameworks = len(set(f.name for f in detected_frameworks))
-        typer.echo(f"📊 Summary: {unique_frameworks} unique frameworks/libraries detected")
+        typer.echo(f"✅ Total: {unique_frameworks} frameworks detected from {total_files} files")
         
     except ImportError as e:
         typer.echo(f"❌ Error importing detector: {e}")
@@ -295,6 +310,152 @@ def detect(
     except Exception as e:
         typer.echo(f"❌ Error during detection: {e}")
         raise typer.Exit(1)
+
+
+def _group_frameworks_by_ecosystem(frameworks: List) -> Dict[str, Dict[str, List]]:
+    """
+    Group frameworks by ecosystem and dependency type.
+    
+    Args:
+        frameworks: List of DetectedFramework objects
+        
+    Returns:
+        Dictionary grouped by ecosystem and dependency type
+    """
+    ecosystem_groups = {}
+    
+    for framework in frameworks:
+        # Determine ecosystem based on source and metadata
+        ecosystem = _determine_ecosystem(framework)
+        
+        # Determine dependency type
+        dep_type = _determine_dependency_type(framework)
+        
+        # Initialize ecosystem if not exists
+        if ecosystem not in ecosystem_groups:
+            ecosystem_groups[ecosystem] = {"main": [], "dev": [], "inferred": []}
+        
+        # Add to appropriate group
+        ecosystem_groups[ecosystem][dep_type].append(framework)
+    
+    return ecosystem_groups
+
+
+def _determine_ecosystem(framework) -> str:
+    """Determine the ecosystem for a framework."""
+    source = framework.metadata.get("source", "")
+    
+    # Map sources to ecosystems
+    ecosystem_map = {
+        "requirements.txt": "Python",
+        "pyproject.toml": "Python",
+        "setup.py": "Python",
+        "Pipfile": "Python",
+        "package.json": "JavaScript",
+        "Gemfile": "Ruby",
+        "Gemfile.lock": "Ruby",
+        "composer.json": "PHP",
+        "composer.lock": "PHP",
+        ".csproj": ".NET",
+        "global.json": ".NET",
+        "Cargo.toml": "Rust",
+        "go.mod": "Go",
+        "pom.xml": "Java",
+        "build.gradle": "Java",
+        "mix.exs": "Elixir",
+        "stack.yaml": "Haskell",
+        ".cabal": "Haskell",
+        "Dockerfile": "Docker",
+        "docker-compose.yml": "Docker",
+        "docker-compose.yaml": "Docker",
+        "inferred": "Inferred",
+    }
+    
+    # Check for exact source match
+    if source in ecosystem_map:
+        return ecosystem_map[source]
+    
+    # Check for partial matches
+    for key, ecosystem in ecosystem_map.items():
+        if key in source:
+            return ecosystem
+    
+    # Default based on framework name patterns
+    name = framework.name.lower()
+    if any(pattern in name for pattern in ["react", "vue", "angular", "next", "nuxt", "vite", "svelte"]):
+        return "JavaScript"
+    elif any(pattern in name for pattern in ["django", "flask", "fastapi", "pytest", "mypy"]):
+        return "Python"
+    elif any(pattern in name for pattern in ["spring", "hibernate", "junit"]):
+        return "Java"
+    elif any(pattern in name for pattern in ["rails", "sinatra"]):
+        return "Ruby"
+    elif any(pattern in name for pattern in ["laravel", "symfony"]):
+        return "PHP"
+    
+    return "Other"
+
+
+def _determine_dependency_type(framework) -> str:
+    """Determine if a framework is main, dev, or inferred dependency."""
+    metadata = framework.metadata
+    
+    # Check if it's inferred
+    if metadata.get("inferred", False):
+        return "inferred"
+    
+    # Check for dev dependency indicators
+    source = metadata.get("source", "")
+    dep_type = metadata.get("type", "")
+    confidence = framework.confidence
+    
+    # Dev dependency indicators
+    dev_indicators = [
+        "devDependencies",
+        "require-dev",
+        "optional-dependencies",
+        "group :development",
+        "group :test",
+        "test",
+        "dev",
+        "development"
+    ]
+    
+    if any(indicator in str(metadata) for indicator in dev_indicators):
+        return "dev"
+    
+    # Lower confidence often indicates dev dependencies
+    if confidence < 0.8:
+        return "dev"
+    
+    return "main"
+
+
+def _display_framework(framework, indent: str = "  ") -> None:
+    """Display a single framework with proper formatting."""
+    # Format version
+    version_info = f" (v{framework.version})" if framework.version else ""
+    
+    # Format source file
+    source = framework.metadata.get("source", "unknown")
+    source_info = f" [{source}]"
+    
+    # Format confidence (only show if not 0.9)
+    confidence_info = ""
+    if framework.confidence < 0.9:
+        confidence_info = f" [confidence: {framework.confidence:.1f}]"
+    
+    # Format tags
+    tags_info = ""
+    if hasattr(framework, 'tags') and framework.tags:
+        tags_info = f" [tags: {', '.join(framework.tags)}]"
+    
+    # Build the display string
+    display_parts = [
+        f"{indent}• {framework.name}{version_info}{source_info}{confidence_info}{tags_info}"
+    ]
+    
+    typer.echo("".join(display_parts))
 
 
 def get_default_patterns(tool: Tool) -> List[str]:
