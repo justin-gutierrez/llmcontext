@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass, asdict
 import logging
 from datetime import datetime
+from tqdm import tqdm
 
 from .summarizer import DocumentationSummarizer, SummaryResult
 from .chunker import DocumentationChunker, DocumentChunk
@@ -101,23 +102,37 @@ class DocumentationProcessor:
         
         results = {}
         
-        for topic, chunks in topic_chunks.items():
-            logger.info(f"Processing topic: {topic} ({len(chunks)} chunks)")
-            
-            try:
-                processed_doc = self._process_topic(
-                    tool_name=tool_name,
-                    topic=topic,
-                    chunks=chunks,
-                    output_dir=tool_output_dir
-                )
-                results[topic] = processed_doc
+        # Progress bar for topic processing
+        with tqdm(total=len(topic_chunks), desc=f"Processing {tool_name}", unit="topic") as pbar:
+            for topic, chunks in topic_chunks.items():
+                logger.info(f"Processing topic: {topic} ({len(chunks)} chunks)")
+                pbar.set_description(f"Processing {tool_name} - {topic}")
                 
-                logger.info(f"✅ Completed topic: {topic}")
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing topic {topic}: {e}")
-                continue
+                try:
+                    processed_doc = self._process_topic(
+                        tool_name=tool_name,
+                        topic=topic,
+                        chunks=chunks,
+                        output_dir=tool_output_dir
+                    )
+                    results[topic] = processed_doc
+                    
+                    logger.info(f"✅ Completed topic: {topic}")
+                    pbar.set_postfix(
+                        topic=topic[:20] + "..." if len(topic) > 20 else topic,
+                        chunks=len(chunks),
+                        status="✅ Success"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error processing topic {topic}: {e}")
+                    pbar.set_postfix(
+                        topic=topic[:20] + "..." if len(topic) > 20 else topic,
+                        status="❌ Error"
+                    )
+                    continue
+                finally:
+                    pbar.update(1)
         
         # Create tool-level summary
         self._create_tool_summary(tool_name, results, tool_output_dir)

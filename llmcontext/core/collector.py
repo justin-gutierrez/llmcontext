@@ -16,6 +16,7 @@ import logging
 from urllib.parse import urljoin, urlparse
 import time
 from dataclasses import dataclass
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -254,17 +255,25 @@ class DocumentationCollector:
             all_content = []
             sources = self.doc_sources[tool_name]
             
-            for source in sources:
-                try:
-                    content = await self._fetch_from_source(source)
-                    if content:
-                        all_content.append(f"# {source.name}\n\n{content}\n\n---\n\n")
-                        logger.info(f"Successfully collected from {source.name}")
-                    else:
-                        logger.warning(f"No content collected from {source.name}")
-                except Exception as e:
-                    logger.error(f"Error collecting from {source.name}: {e}")
-                    continue
+            # Progress bar for sources
+            with tqdm(total=len(sources), desc=f"Collecting {tool_name}", unit="source") as pbar:
+                for source in sources:
+                    try:
+                        pbar.set_description(f"Collecting {tool_name} from {source.name}")
+                        content = await self._fetch_from_source(source)
+                        if content:
+                            all_content.append(f"# {source.name}\n\n{content}\n\n---\n\n")
+                            logger.info(f"Successfully collected from {source.name}")
+                            pbar.set_postfix(status="✅ Success")
+                        else:
+                            logger.warning(f"No content collected from {source.name}")
+                            pbar.set_postfix(status="⚠️ No content")
+                    except Exception as e:
+                        logger.error(f"Error collecting from {source.name}: {e}")
+                        pbar.set_postfix(status="❌ Error")
+                        continue
+                    finally:
+                        pbar.update(1)
             
             if all_content:
                 # Write combined content to file
@@ -409,14 +418,25 @@ class DocumentationCollector:
             Dictionary mapping tool names to success status
         """
         results = {}
+        tools = list(self.doc_sources.keys())
         
-        for tool_name in self.doc_sources.keys():
-            try:
-                success = await self.collect_documentation(tool_name, force_refresh)
-                results[tool_name] = success
-            except Exception as e:
-                logger.error(f"Error collecting documentation for {tool_name}: {e}")
-                results[tool_name] = False
+        # Progress bar for all tools
+        with tqdm(total=len(tools), desc="Collecting all documentation", unit="tool") as pbar:
+            for tool_name in tools:
+                try:
+                    pbar.set_description(f"Collecting {tool_name}")
+                    success = await self.collect_documentation(tool_name, force_refresh)
+                    results[tool_name] = success
+                    if success:
+                        pbar.set_postfix(status="✅ Success")
+                    else:
+                        pbar.set_postfix(status="❌ Failed")
+                except Exception as e:
+                    logger.error(f"Error collecting documentation for {tool_name}: {e}")
+                    results[tool_name] = False
+                    pbar.set_postfix(status="❌ Error")
+                finally:
+                    pbar.update(1)
         
         return results
     

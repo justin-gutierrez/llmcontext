@@ -15,6 +15,7 @@ import logging
 from datetime import datetime
 import numpy as np
 from openai import OpenAI
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -112,17 +113,35 @@ class EmbeddingGenerator:
         if tools:
             tool_dirs = [d for d in tool_dirs if d.name in tools]
         
-        for tool_dir in tool_dirs:
-            tool_name = tool_dir.name
-            logger.info(f"Processing tool: {tool_name}")
-            
-            try:
-                tool_results = self._process_tool_embeddings(tool_dir, topics)
-                all_results[tool_name] = tool_results
+        # Progress bar for tool processing
+        with tqdm(total=len(tool_dirs), desc="Generating embeddings", unit="tool") as pbar:
+            for tool_dir in tool_dirs:
+                tool_name = tool_dir.name
+                logger.info(f"Processing tool: {tool_name}")
+                pbar.set_description(f"Processing {tool_name}")
                 
-            except Exception as e:
-                logger.error(f"Error processing tool {tool_name}: {e}")
-                continue
+                try:
+                    tool_results = self._process_tool_embeddings(tool_dir, topics)
+                    all_results[tool_name] = tool_results
+                    
+                    # Count total embeddings generated
+                    total_embeddings = sum(len(batch.embeddings) for batch in tool_results.values())
+                    pbar.set_postfix(
+                        tool=tool_name,
+                        embeddings=total_embeddings,
+                        topics=len(tool_results),
+                        status="✅ Success"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error processing tool {tool_name}: {e}")
+                    pbar.set_postfix(
+                        tool=tool_name,
+                        status="❌ Error"
+                    )
+                    continue
+                finally:
+                    pbar.update(1)
         
         return all_results
     
@@ -150,34 +169,49 @@ class EmbeddingGenerator:
         if topics:
             topic_dirs = [d for d in topic_dirs if d.name in topics]
         
-        for topic_dir in topic_dirs:
-            topic_name = topic_dir.name
-            logger.info(f"Processing topic: {topic_name}")
-            
-            try:
-                # Look for JSON file first (preferred)
-                json_file = topic_dir / f"{topic_name}.json"
-                if json_file.exists():
-                    batch = self._process_json_file(json_file, tool_name, topic_name)
-                else:
-                    # Fallback to markdown file
-                    md_file = topic_dir / f"{topic_name}.md"
-                    if md_file.exists():
-                        batch = self._process_markdown_file(md_file, tool_name, topic_name)
+        # Progress bar for topic processing
+        with tqdm(total=len(topic_dirs), desc=f"Processing {tool_name} topics", unit="topic") as pbar:
+            for topic_dir in topic_dirs:
+                topic_name = topic_dir.name
+                logger.info(f"Processing topic: {topic_name}")
+                pbar.set_description(f"Processing {tool_name} - {topic_name}")
+                
+                try:
+                    # Look for JSON file first (preferred)
+                    json_file = topic_dir / f"{topic_name}.json"
+                    if json_file.exists():
+                        batch = self._process_json_file(json_file, tool_name, topic_name)
                     else:
-                        logger.warning(f"No documentation files found in {topic_dir}")
-                        continue
-                
-                topic_results[topic_name] = batch
-                
-                # Save embeddings
-                self._save_embeddings(batch)
-                
-                logger.info(f"✅ Completed topic: {topic_name}")
-                
-            except Exception as e:
-                logger.error(f"Error processing topic {topic_name}: {e}")
-                continue
+                        # Fallback to markdown file
+                        md_file = topic_dir / f"{topic_name}.md"
+                        if md_file.exists():
+                            batch = self._process_markdown_file(md_file, tool_name, topic_name)
+                        else:
+                            logger.warning(f"No documentation files found in {topic_dir}")
+                            pbar.set_postfix(status="⚠️ No files")
+                            continue
+                    
+                    topic_results[topic_name] = batch
+                    
+                    # Save embeddings
+                    self._save_embeddings(batch)
+                    
+                    logger.info(f"✅ Completed topic: {topic_name}")
+                    pbar.set_postfix(
+                        topic=topic_name,
+                        embeddings=len(batch.embeddings),
+                        status="✅ Success"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error processing topic {topic_name}: {e}")
+                    pbar.set_postfix(
+                        topic=topic_name,
+                        status="❌ Error"
+                    )
+                    continue
+                finally:
+                    pbar.update(1)
         
         return topic_results
     

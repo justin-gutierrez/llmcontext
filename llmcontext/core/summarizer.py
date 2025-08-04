@@ -16,6 +16,7 @@ from openai import OpenAI
 import asyncio
 import aiohttp
 from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -237,34 +238,47 @@ Provide a compressed, practical summary that retains all essential information w
         """
         results = []
         
-        # Process chunks with thread pool for concurrency
-        with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
-            # Submit all tasks
-            future_to_chunk = {
-                executor.submit(self.summarize_chunk, chunk['content'], chunk['chunk_id'], framework_name): chunk
-                for chunk in chunks
-            }
-            
-            # Collect results as they complete
-            for future in future_to_chunk:
-                try:
-                    result = future.result()
-                    results.append(result)
-                    logger.info(f"Summarized chunk {result.chunk_id}: {result.token_reduction:.1f}% reduction")
-                except Exception as e:
-                    chunk = future_to_chunk[future]
-                    logger.error(f"Failed to summarize chunk {chunk['chunk_id']}: {e}")
-                    # Add fallback result
-                    results.append(SummaryResult(
-                        original_content=chunk['content'],
-                        summarized_content=chunk['content'],
-                        chunk_id=chunk['chunk_id'],
-                        token_reduction=0.0,
-                        original_tokens=len(chunk['content'].split()) * 1.3,
-                        summarized_tokens=len(chunk['content'].split()) * 1.3,
-                        metadata={"error": str(e), "fallback": True},
-                        processing_time=0.0
-                    ))
+        # Progress bar for chunk processing
+        with tqdm(total=len(chunks), desc=f"Summarizing {framework_name}", unit="chunk") as pbar:
+            # Process chunks with thread pool for concurrency
+            with ThreadPoolExecutor(max_workers=self.max_concurrent) as executor:
+                # Submit all tasks
+                future_to_chunk = {
+                    executor.submit(self.summarize_chunk, chunk['content'], chunk['chunk_id'], framework_name): chunk
+                    for chunk in chunks
+                }
+                
+                # Collect results as they complete
+                for future in future_to_chunk:
+                    try:
+                        result = future.result()
+                        results.append(result)
+                        logger.info(f"Summarized chunk {result.chunk_id}: {result.token_reduction:.1f}% reduction")
+                        pbar.set_postfix(
+                            chunk_id=result.chunk_id[:20] + "..." if len(result.chunk_id) > 20 else result.chunk_id,
+                            reduction=f"{result.token_reduction:.1f}%",
+                            status="✅ Success"
+                        )
+                    except Exception as e:
+                        chunk = future_to_chunk[future]
+                        logger.error(f"Failed to summarize chunk {chunk['chunk_id']}: {e}")
+                        # Add fallback result
+                        results.append(SummaryResult(
+                            original_content=chunk['content'],
+                            summarized_content=chunk['content'],
+                            chunk_id=chunk['chunk_id'],
+                            token_reduction=0.0,
+                            original_tokens=len(chunk['content'].split()) * 1.3,
+                            summarized_tokens=len(chunk['content'].split()) * 1.3,
+                            metadata={"error": str(e), "fallback": True},
+                            processing_time=0.0
+                        ))
+                        pbar.set_postfix(
+                            chunk_id=chunk['chunk_id'][:20] + "..." if len(chunk['chunk_id']) > 20 else chunk['chunk_id'],
+                            status="❌ Error"
+                        )
+                    finally:
+                        pbar.update(1)
         
         return results
     
@@ -320,18 +334,38 @@ Provide a compressed, practical summary that retains all essential information w
         # Create output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        # Process all markdown files
-        for file_path in input_dir.glob("*.md"):
-            try:
-                output_path = output_dir / f"summarized_{file_path.name}"
-                result = self.summarize_file(file_path, output_path)
-                results.append(result)
-                
-                logger.info(f"Summarized {file_path.name}: {result.token_reduction:.1f}% reduction")
-                
-            except Exception as e:
-                logger.error(f"Error summarizing {file_path}: {e}")
-                continue
+        # Get all markdown files
+        files = list(input_dir.glob("*.md"))
+        
+        if not files:
+            logger.warning(f"No markdown files found in {input_dir}")
+            return results
+        
+        # Progress bar for file processing
+        with tqdm(total=len(files), desc=f"Summarizing {framework_name} files", unit="file") as pbar:
+            for file_path in files:
+                try:
+                    pbar.set_description(f"Summarizing {file_path.name}")
+                    output_path = output_dir / f"summarized_{file_path.name}"
+                    result = self.summarize_file(file_path, output_path)
+                    results.append(result)
+                    
+                    logger.info(f"Summarized {file_path.name}: {result.token_reduction:.1f}% reduction")
+                    pbar.set_postfix(
+                        file=file_path.name[:20] + "..." if len(file_path.name) > 20 else file_path.name,
+                        reduction=f"{result.token_reduction:.1f}%",
+                        status="✅ Success"
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error summarizing {file_path}: {e}")
+                    pbar.set_postfix(
+                        file=file_path.name[:20] + "..." if len(file_path.name) > 20 else file_path.name,
+                        status="❌ Error"
+                    )
+                    continue
+                finally:
+                    pbar.update(1)
         
         return results
     
