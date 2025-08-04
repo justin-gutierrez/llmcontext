@@ -7,6 +7,7 @@ from the vector database.
 
 import os
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Query, Body
@@ -79,6 +80,7 @@ class ErrorResponse(BaseModel):
 # Configuration
 CONFIG_FILE = Path(".llmcontext.json")
 VECTOR_DB_DIR = Path("chroma_db")
+CONTEXT_CACHE_DIR = Path(".llmcontext/context")
 
 
 def load_config() -> Dict[str, Any]:
@@ -117,6 +119,95 @@ def format_tool_string(tool: ToolInfo) -> str:
         return f"{tool.name}@{tool.version}"
     else:
         return tool.name
+
+
+def save_context_chunks_to_disk(chunks: List[ContextChunk], query_info: Dict[str, Any]) -> None:
+    """
+    Save context chunks to disk in organized markdown files.
+    
+    Saves chunks to .llmcontext/context/<tool>/<topic>.md files for manual access.
+    """
+    try:
+        # Ensure context cache directory exists
+        CONTEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Group chunks by tool and topic
+        tool_topic_groups = {}
+        for chunk in chunks:
+            tool_name = chunk.tool_name
+            topic = chunk.topic
+            
+            if tool_name not in tool_topic_groups:
+                tool_topic_groups[tool_name] = {}
+            
+            if topic not in tool_topic_groups[tool_name]:
+                tool_topic_groups[tool_name][topic] = []
+            
+            tool_topic_groups[tool_name][topic].append(chunk)
+        
+        # Save each tool/topic group to a separate file
+        for tool_name, topic_groups in tool_topic_groups.items():
+            # Create tool directory
+            tool_dir = CONTEXT_CACHE_DIR / tool_name
+            tool_dir.mkdir(exist_ok=True)
+            
+            for topic, topic_chunks in topic_groups.items():
+                # Create markdown file for this tool/topic combination
+                filename = f"{topic}.md"
+                filepath = tool_dir / filename
+                
+                # Generate markdown content
+                markdown_content = generate_context_markdown(topic_chunks, query_info)
+                
+                # Write to file
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(markdown_content)
+                
+                print(f"Saved context chunks to: {filepath}")
+    
+    except Exception as e:
+        # Log error but don't fail the request
+        print(f"Warning: Failed to save context chunks to disk: {e}")
+
+
+def generate_context_markdown(chunks: List[ContextChunk], query_info: Dict[str, Any]) -> str:
+    """
+    Generate markdown content for context chunks.
+    """
+    # Header
+    tool_name = chunks[0].tool_name if chunks else "Unknown"
+    topic = chunks[0].topic if chunks else "Unknown"
+    
+    markdown_lines = [
+        f"# {tool_name.title()} - {topic.title()}",
+        "",
+        "## Query Information",
+        f"- **Query**: {query_info.get('query', 'N/A')}",
+        f"- **Search Method**: {query_info.get('search_method', 'N/A')}",
+        f"- **Similarity Threshold**: {query_info.get('similarity_threshold', 'N/A')}",
+        f"- **Results Found**: {len(chunks)}",
+        f"- **Generated**: {query_info.get('timestamp', 'N/A')}",
+        "",
+        "## Context Chunks",
+        ""
+    ]
+    
+    # Add each chunk
+    for i, chunk in enumerate(chunks, 1):
+        markdown_lines.extend([
+            f"### Chunk {i}: {chunk.chunk_id}",
+            f"**Similarity Score**: {chunk.similarity_score:.3f}",
+            f"**Source File**: {chunk.source_file}",
+            "",
+            "```markdown",
+            chunk.content,
+            "```",
+            "",
+            "---",
+            ""
+        ])
+    
+    return "\n".join(markdown_lines)
 
 
 @app.get("/")
@@ -333,8 +424,129 @@ async def get_context(
             "n_results": n_results,
             "similarity_threshold": similarity_threshold,
             "results_returned": len(chunks),
-            "search_method": "direct" if len(chunks) == len(search_results) else "semantic"
+            "search_method": "direct" if len(chunks) == len(search_results) else "semantic",
+            "timestamp": datetime.now().isoformat()
         }
+        
+        # Save context chunks to disk
+        save_context_chunks_to_disk(chunks, query_info)
+        
+        return ContextResponse(
+            chunks=chunks,
+            total_results=len(chunks),
+            query_info=query_info
+        )
+    
+    except HTTPException:
+        # Re-raise HTTP exceptions
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/context/vector", response_model=ContextResponse)
+async def get_vector_context(
+    query: str = Query(..., description="Search query/question"),
+    n_results: int = Query(10, description="Number of results to return", ge=1, le=100),
+    similarity_threshold: float = Query(0.5, description="Minimum similarity score", ge=0.0, le=1.0)
+):
+    """
+    Retrieve optimized context chunks from the vector database using universal search.
+    
+    This endpoint performs semantic search across all tools and topics to find
+    the most relevant documentation chunks for the given query.
+    """
+    try:
+        # Import vector database module
+        try:
+            from llmcontext.core.vectordb import VectorDatabase
+        except ImportError as e:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Vector database module not available: {str(e)}"
+            )
+        
+        # Check if vector database exists
+        if not VECTOR_DB_DIR.exists():
+            raise HTTPException(
+                status_code=404,
+                detail="Vector database not found. Please run 'llmcontext vectordb add' first."
+            )
+        
+        # Initialize vector database
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise HTTPException(
+                status_code=500,
+                detail="OpenAI API key not found. Set OPENAI_API_KEY environment variable."
+            )
+        
+        try:
+            db = VectorDatabase(
+                persist_directory=VECTOR_DB_DIR,
+                collection_name="llmcontext_docs",
+                api_key=api_key
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to initialize vector database: {str(e)}"
+            )
+        
+        # Perform semantic search across all tools and topics
+        search_results = db.search_by_text(
+            query=query,
+            n_results=n_results,
+            similarity_threshold=similarity_threshold
+        )
+        
+        if not search_results:
+            # Get available tools and topics for better error message
+            available_tools = db.get_tools()
+            available_topics = db.get_topics()
+            
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": f"No matching documents found for query '{query}'",
+                    "available_tools": available_tools,
+                    "available_topics": available_topics,
+                    "suggestions": [
+                        "Try rephrasing your query",
+                        "Try using more specific terms",
+                        "Lower the similarity threshold"
+                    ]
+                }
+            )
+        
+        # Convert search results to response format
+        chunks = []
+        for result in search_results:
+            chunk = ContextChunk(
+                chunk_id=result.chunk_id,
+                content=result.content,
+                tool_name=result.tool_name,
+                topic=result.topic,
+                source_file=result.source_file,
+                similarity_score=result.similarity_score,
+                metadata=result.metadata
+            )
+            chunks.append(chunk)
+        
+        # Prepare query information
+        query_info = {
+            "query": query,
+            "n_results": n_results,
+            "similarity_threshold": similarity_threshold,
+            "results_returned": len(chunks),
+            "search_method": "semantic",
+            "tools_found": list(set(chunk.tool_name for chunk in chunks)),
+            "topics_found": list(set(chunk.topic for chunk in chunks)),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Save context chunks to disk
+        save_context_chunks_to_disk(chunks, query_info)
         
         return ContextResponse(
             chunks=chunks,

@@ -88,6 +88,21 @@ def call_sidecar_get_topics(tool: Optional[str] = None) -> Dict[str, Any]:
         raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
 
 
+def call_sidecar_universal_query(question: str, n_results: int = 10, similarity_threshold: float = 0.5) -> Dict[str, Any]:
+    """Call the sidecar server to perform a universal query across all tools."""
+    try:
+        params = {
+            "query": question,
+            "n_results": n_results,
+            "similarity_threshold": similarity_threshold
+        }
+        response = requests.get(f"{SIDECAR_URL}/context/vector", params=params, timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
 def handle_sidecar_fallback(operation: str, fallback_func, *args, **kwargs):
     """Handle sidecar fallback when server is not available."""
     if check_sidecar_available():
@@ -408,6 +423,89 @@ def get(
 
 @app.command()
 def query(
+    question: str = typer.Argument(..., help="Question or query to search for"),
+    n_results: int = typer.Option(10, "--n-results", "-n", help="Number of results to return"),
+    similarity_threshold: float = typer.Option(0.5, "--threshold", "-t", help="Minimum similarity score"),
+    tool_filter: Optional[str] = typer.Option(None, "--tool", help="Filter results by specific tool"),
+    topic_filter: Optional[str] = typer.Option(None, "--topic", help="Filter results by specific topic"),
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
+):
+    """
+    Query the vector database for context using keyword search + embeddings.
+    
+    Searches across all tools and topics to find the best matching context chunks.
+    Uses semantic search to understand the intent of your question.
+    """
+    if use_sidecar and check_sidecar_available():
+        try:
+            # Try to use sidecar server for universal query
+            result = call_sidecar_universal_query(question, n_results, similarity_threshold)
+            chunks = result.get("chunks", [])
+            total_results = result.get("total_results", 0)
+            query_info = result.get("query_info", {})
+            
+            # Apply filters if specified
+            if tool_filter or topic_filter:
+                filtered_chunks = []
+                for chunk in chunks:
+                    if tool_filter and chunk.get("tool_name", "").lower() != tool_filter.lower():
+                        continue
+                    if topic_filter and chunk.get("topic", "").lower() != topic_filter.lower():
+                        continue
+                    filtered_chunks.append(chunk)
+                chunks = filtered_chunks
+                total_results = len(chunks)
+            
+            typer.echo(f"SEARCH: Universal Query Results")
+            typer.echo(f"QUERY: '{question}'")
+            typer.echo(f"STATS: Found {total_results} context chunks")
+            if tool_filter:
+                typer.echo(f"FILTER: Tool: {tool_filter}")
+            if topic_filter:
+                typer.echo(f"FILTER: Topic: {topic_filter}")
+            typer.echo(f"STATS: Search method: {query_info.get('search_method', 'semantic')}")
+            typer.echo()
+            
+            if chunks:
+                # Group results by tool for better organization
+                tool_groups = {}
+                for chunk in chunks:
+                    tool_name = chunk.get("tool_name", "Unknown")
+                    if tool_name not in tool_groups:
+                        tool_groups[tool_name] = []
+                    tool_groups[tool_name].append(chunk)
+                
+                # Display results grouped by tool
+                for tool_name, tool_chunks in tool_groups.items():
+                    typer.echo(f"TOOLS: {tool_name} ({len(tool_chunks)} results):")
+                    for i, chunk in enumerate(tool_chunks, 1):
+                        typer.echo(f"  {i}. {chunk.get('chunk_id', 'Unknown')}")
+                        typer.echo(f"     Topic: {chunk.get('topic', 'Unknown')}")
+                        typer.echo(f"     Similarity: {chunk.get('similarity_score', 0):.3f}")
+                        typer.echo(f"     Source: {chunk.get('source_file', 'Unknown')}")
+                        typer.echo(f"     Content: {chunk.get('content', '')[:300]}...")
+                        typer.echo()
+            else:
+                typer.echo("ERROR: No matching context found.")
+                typer.echo("Try:")
+                typer.echo("    • Rephrasing your question")
+                typer.echo("    • Lower similarity threshold")
+                typer.echo("    • Removing tool/topic filters")
+                typer.echo("    • Check available tools with 'llmcontext get'")
+            return
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+    
+    # Fallback to local configuration
+    typer.echo("ERROR: Vector database query requires sidecar server.")
+    typer.echo("Please start the sidecar server with: python sidecar/app.py")
+    typer.echo("Or use the vectordb command for direct database access.")
+    raise typer.Exit(1)
+
+
+@app.command()
+def query_tool(
     tool: str = typer.Argument(..., help="Tool name to query"),
     topic: str = typer.Argument(..., help="Topic to query"),
     n_results: int = typer.Option(5, "--n-results", "-n", help="Number of results to return"),
@@ -417,7 +515,7 @@ def query(
     """
     Query the vector database for context about a specific tool and topic.
     
-    Returns optimized context chunks from the documentation.
+    Returns optimized context chunks from the documentation for the specified tool and topic.
     """
     if use_sidecar and check_sidecar_available():
         try:
@@ -455,6 +553,94 @@ def query(
     typer.echo("Please start the sidecar server with: python sidecar/app.py")
     typer.echo("Or use the vectordb command for direct database access.")
     raise typer.Exit(1)
+
+
+@app.command()
+def read_context(
+    tool: Optional[str] = typer.Argument(None, help="Tool name to read context for"),
+    topic: Optional[str] = typer.Argument(None, help="Topic to read context for"),
+    list_available: bool = typer.Option(False, "--list", "-l", help="List available context files"),
+    cache_dir: Path = typer.Option(Path(".llmcontext/context"), "--cache-dir", "-c", help="Context cache directory")
+):
+    """
+    Read context chunks from disk cache.
+    
+    Reads optimized context chunks that were saved to .llmcontext/context/<tool>/<topic>.md files.
+    """
+    try:
+        if not cache_dir.exists():
+            typer.echo(f"ERROR: Context cache directory not found: {cache_dir}")
+            typer.echo("No context chunks have been saved yet.")
+            typer.echo("Run 'llmcontext query' or 'llmcontext query-tool' to generate context chunks.")
+            raise typer.Exit(1)
+        
+        if list_available:
+            # List all available context files
+            typer.echo(f"INFO: Available context files in {cache_dir}:")
+            
+            if not any(cache_dir.iterdir()):
+                typer.echo("  No context files found.")
+                return
+            
+            for tool_dir in sorted(cache_dir.iterdir()):
+                if tool_dir.is_dir():
+                    typer.echo(f"  TOOLS: {tool_dir.name}/")
+                    for topic_file in sorted(tool_dir.glob("*.md")):
+                        topic_name = topic_file.stem
+                        typer.echo(f"    • {topic_name}.md")
+            return
+        
+        if not tool:
+            typer.echo("ERROR: Tool name is required.")
+            typer.echo("Use --list to see available tools and topics.")
+            raise typer.Exit(1)
+        
+        tool_dir = cache_dir / tool
+        if not tool_dir.exists():
+            typer.echo(f"ERROR: No context found for tool '{tool}'")
+            typer.echo(f"Available tools: {', '.join([d.name for d in cache_dir.iterdir() if d.is_dir()])}")
+            raise typer.Exit(1)
+        
+        if not topic:
+            # List topics for the tool
+            topic_files = list(tool_dir.glob("*.md"))
+            if not topic_files:
+                typer.echo(f"ERROR: No context topics found for tool '{tool}'")
+                raise typer.Exit(1)
+            
+            typer.echo(f"INFO: Available topics for '{tool}':")
+            for topic_file in sorted(topic_files):
+                topic_name = topic_file.stem
+                typer.echo(f"  • {topic_name}")
+            return
+        
+        # Read specific tool/topic context file
+        context_file = tool_dir / f"{topic}.md"
+        if not context_file.exists():
+            typer.echo(f"ERROR: Context file not found: {context_file}")
+            available_topics = [f.stem for f in tool_dir.glob("*.md")]
+            typer.echo(f"Available topics for '{tool}': {', '.join(available_topics)}")
+            raise typer.Exit(1)
+        
+        # Read and display the context file
+        try:
+            with open(context_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            typer.echo(f"INFO: Reading context from: {context_file}")
+            typer.echo("=" * 80)
+            typer.echo(content)
+            typer.echo("=" * 80)
+            
+        except Exception as e:
+            typer.echo(f"ERROR: Failed to read context file: {e}")
+            raise typer.Exit(1)
+    
+    except typer.Exit:
+        raise
+    except Exception as e:
+        typer.echo(f"ERROR: Unexpected error: {e}")
+        raise typer.Exit(1)
 
 
 @app.command()
