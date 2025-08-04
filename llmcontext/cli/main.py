@@ -5,9 +5,103 @@ Main CLI application using Typer.
 import json
 import os
 import typer
+import requests
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union, Any
 from enum import Enum
+
+# Sidecar server configuration
+SIDECAR_URL = "http://127.0.0.1:8001"
+SIDECAR_TIMEOUT = 5  # seconds
+
+
+def check_sidecar_available() -> bool:
+    """Check if the sidecar server is available."""
+    try:
+        response = requests.get(f"{SIDECAR_URL}/health", timeout=SIDECAR_TIMEOUT)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def call_sidecar_add_tool(tool: str, version: Optional[str] = None) -> Dict[str, Any]:
+    """Call the sidecar server to add a tool."""
+    try:
+        data = {"tool": tool}
+        if version:
+            data["version"] = version
+        
+        response = requests.post(f"{SIDECAR_URL}/add-tool", json=data, timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
+def call_sidecar_get_stack() -> Dict[str, Any]:
+    """Call the sidecar server to get the current stack."""
+    try:
+        response = requests.get(f"{SIDECAR_URL}/stack", timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
+def call_sidecar_get_context(tool: str, topic: str, n_results: int = 10, similarity_threshold: float = 0.5) -> Dict[str, Any]:
+    """Call the sidecar server to get context."""
+    try:
+        params = {
+            "tool": tool,
+            "topic": topic,
+            "n_results": n_results,
+            "similarity_threshold": similarity_threshold
+        }
+        response = requests.get(f"{SIDECAR_URL}/context", params=params, timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
+def call_sidecar_get_tools() -> Dict[str, Any]:
+    """Call the sidecar server to get available tools."""
+    try:
+        response = requests.get(f"{SIDECAR_URL}/tools", timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
+def call_sidecar_get_topics(tool: Optional[str] = None) -> Dict[str, Any]:
+    """Call the sidecar server to get available topics."""
+    try:
+        params = {}
+        if tool:
+            params["tool"] = tool
+        
+        response = requests.get(f"{SIDECAR_URL}/topics", params=params, timeout=SIDECAR_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        raise typer.BadParameter(f"Failed to call sidecar server: {str(e)}")
+
+
+def handle_sidecar_fallback(operation: str, fallback_func, *args, **kwargs):
+    """Handle sidecar fallback when server is not available."""
+    if check_sidecar_available():
+        try:
+            return fallback_func(*args, **kwargs)
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+            return None
+    else:
+        typer.echo(f"WARNING:  Sidecar server not available at {SIDECAR_URL}")
+        typer.echo("Falling back to local configuration...")
+        return None
+
 
 app = typer.Typer(
     name="llmcontext",
@@ -97,26 +191,38 @@ def init(
     }
     
     save_config(default_config)
-    typer.echo(f"✅ Created configuration file: {config_path}")
+    typer.echo(f"SUCCESS: Created configuration file: {config_path}")
     typer.echo("📝 Edit the file to customize your settings.")
-    typer.echo("🔧 Use 'llmcontext add <tool>' to register frameworks.")
+    typer.echo("TOOLS: Use 'llmcontext add <tool>' to register frameworks.")
 
 
 @app.command()
 def add(
     tool: Tool = typer.Argument(..., help="Tool/framework to add"),
     version: Optional[str] = typer.Option(None, "--version", "-v", help="Specific version to track"),
-    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file")
+    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
 ):
     """
     Add a tool/framework to the LLMContext configuration.
     
     Registers a framework for detection and documentation processing.
     """
+    if use_sidecar and check_sidecar_available():
+        try:
+            # Try to use sidecar server
+            result = call_sidecar_add_tool(tool.value, version)
+            typer.echo(f"SUCCESS: {result.get('message', 'Tool added successfully')}")
+            return
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+    
+    # Fallback to local configuration
     config_path = config_file or get_config_path()
     
     if not config_path.exists():
-        typer.echo(f"❌ Configuration file not found: {config_path}")
+        typer.echo(f"ERROR: Configuration file not found: {config_path}")
         typer.echo("Run 'llmcontext init' to create a configuration file.")
         raise typer.Exit(1)
     
@@ -124,7 +230,7 @@ def add(
         with open(config_path, "r") as f:
             config = json.load(f)
     except json.JSONDecodeError:
-        typer.echo("❌ Invalid JSON in configuration file.")
+        typer.echo("ERROR: Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
     # Ensure the stack section exists
@@ -140,14 +246,14 @@ def add(
     for existing_tool in config["stack"]:
         if existing_tool.startswith(f"{tool.value}@"):
             if existing_tool == tool_entry:
-                typer.echo(f"⚠️  Tool '{tool_entry}' is already in the stack.")
+                typer.echo(f"WARNING:  Tool '{tool_entry}' is already in the stack.")
                 return
             else:
                 # Update existing tool with new version
                 config["stack"].remove(existing_tool)
                 break
         elif existing_tool == tool.value and not version:
-            typer.echo(f"⚠️  Tool '{tool.value}' is already in the stack.")
+            typer.echo(f"WARNING:  Tool '{tool.value}' is already in the stack.")
             return
     
     # Add tool to stack
@@ -157,10 +263,10 @@ def add(
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     
-    typer.echo(f"✅ Added '{tool_entry}' to stack.")
+    typer.echo(f"SUCCESS: Added '{tool_entry}' to stack.")
     
     # Show next steps
-    typer.echo(f"🔍 Run 'llmcontext detect' to scan for {tool.value} in your codebase.")
+    typer.echo(f"SEARCH: Run 'llmcontext detect' to scan for {tool.value} in your codebase.")
 
 
 @app.command()
@@ -174,18 +280,18 @@ def remove(
     config_path = config_file or get_config_path()
     
     if not config_path.exists():
-        typer.echo(f"❌ Configuration file not found: {config_path}")
+        typer.echo(f"ERROR: Configuration file not found: {config_path}")
         raise typer.Exit(1)
     
     try:
         with open(config_path, "r") as f:
             config = json.load(f)
     except json.JSONDecodeError:
-        typer.echo("❌ Invalid JSON in configuration file.")
+        typer.echo("ERROR: Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
     if "stack" not in config:
-        typer.echo("❌ No tools configured.")
+        typer.echo("ERROR: No tools configured.")
         raise typer.Exit(1)
     
     # Find and remove the tool (with or without version)
@@ -197,27 +303,66 @@ def remove(
             break
     
     if not removed:
-        typer.echo(f"⚠️  Tool '{tool}' is not in the stack.")
+        typer.echo(f"WARNING:  Tool '{tool}' is not in the stack.")
         return
     
     # Save updated configuration
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     
-    typer.echo(f"✅ Removed '{tool}' from stack.")
+    typer.echo(f"SUCCESS: Removed '{tool}' from stack.")
 
 
 @app.command()
-def list_tools(
-    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file")
+def get(
+    tool: Optional[str] = typer.Argument(None, help="Tool name to get information for"),
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
 ):
     """
-    List all configured tools/frameworks.
+    Get information about configured tools or available tools in the vector database.
+    
+    If no tool is specified, shows all available tools in the vector database.
+    If a tool is specified, shows topics available for that tool.
     """
-    config_path = config_file or get_config_path()
+    if use_sidecar and check_sidecar_available():
+        try:
+            if tool:
+                # Get topics for specific tool
+                result = call_sidecar_get_topics(tool)
+                topics = result.get("topics", [])
+                total = result.get("total_topics", 0)
+                
+                typer.echo(f"TOPICS: Topics available for '{tool}' ({total} total):")
+                if topics:
+                    for topic in topics:
+                        typer.echo(f"    • {topic}")
+                else:
+                    typer.echo("  No topics found for this tool.")
+            else:
+                # Get all available tools
+                result = call_sidecar_get_tools()
+                tools = result.get("tools", {})
+                total = result.get("total_tools", 0)
+                
+                typer.echo(f"TOOLS:  Available tools in vector database ({total} total):")
+                for tool_name, tool_info in tools.items():
+                    topics = tool_info.get("topics", [])
+                    topic_count = tool_info.get("topic_count", 0)
+                    typer.echo(f"    • {tool_name} ({topic_count} topics)")
+                    for topic in topics[:5]:  # Show first 5 topics
+                        typer.echo(f"    - {topic}")
+                    if len(topics) > 5:
+                        typer.echo(f"    ... and {len(topics) - 5} more")
+            return
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+    
+    # Fallback to local configuration
+    config_path = get_config_path()
     
     if not config_path.exists():
-        typer.echo(f"❌ Configuration file not found: {config_path}")
+        typer.echo(f"ERROR: Configuration file not found: {config_path}")
         typer.echo("Run 'llmcontext init' to create a configuration file.")
         raise typer.Exit(1)
     
@@ -225,20 +370,199 @@ def list_tools(
         with open(config_path, "r") as f:
             config = json.load(f)
     except json.JSONDecodeError:
-        typer.echo("❌ Invalid JSON in configuration file.")
+        typer.echo("ERROR: Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
     if "stack" not in config or not config["stack"]:
-        typer.echo("📋 No tools configured.")
+        typer.echo("INFO: No tools configured.")
         return
     
-    typer.echo("📋 Configured tools:")
+    if tool:
+        # Check if tool is in stack
+        tool_found = False
+        for tool_entry in config["stack"]:
+            if tool_entry == tool or tool_entry.startswith(f"{tool}@"):
+                tool_found = True
+                break
+        
+        if tool_found:
+            typer.echo(f"SUCCESS: Tool '{tool}' is configured in the stack.")
+        else:
+            typer.echo(f"ERROR: Tool '{tool}' is not configured in the stack.")
+            typer.echo("Available tools:")
+            for tool_entry in config["stack"]:
+                if "@" in tool_entry:
+                    tool_name, version = tool_entry.split("@", 1)
+                    typer.echo(f"    • {tool_name} (version: {version})")
+                else:
+                    typer.echo(f"    • {tool_entry} (version: latest)")
+    else:
+        typer.echo("INFO: Configured tools:")
+        for tool_entry in config["stack"]:
+            if "@" in tool_entry:
+                tool_name, version = tool_entry.split("@", 1)
+                typer.echo(f"    • {tool_name} (version: {version})")
+            else:
+                typer.echo(f"    • {tool_entry} (version: latest)")
+
+
+@app.command()
+def query(
+    tool: str = typer.Argument(..., help="Tool name to query"),
+    topic: str = typer.Argument(..., help="Topic to query"),
+    n_results: int = typer.Option(5, "--n-results", "-n", help="Number of results to return"),
+    similarity_threshold: float = typer.Option(0.5, "--threshold", "-t", help="Minimum similarity score"),
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
+):
+    """
+    Query the vector database for context about a specific tool and topic.
+    
+    Returns optimized context chunks from the documentation.
+    """
+    if use_sidecar and check_sidecar_available():
+        try:
+            # Try to use sidecar server
+            result = call_sidecar_get_context(tool, topic, n_results, similarity_threshold)
+            chunks = result.get("chunks", [])
+            total_results = result.get("total_results", 0)
+            query_info = result.get("query_info", {})
+            
+            typer.echo(f"SEARCH: Query Results for '{tool}' - '{topic}'")
+            typer.echo(f"STATS: Found {total_results} context chunks")
+            typer.echo(f"STATS: Search method: {query_info.get('search_method', 'unknown')}")
+            typer.echo()
+            
+            if chunks:
+                for i, chunk in enumerate(chunks, 1):
+                    typer.echo(f"{i}. {chunk.get('chunk_id', 'Unknown')}")
+                    typer.echo(f"   Similarity: {chunk.get('similarity_score', 0):.3f}")
+                    typer.echo(f"   Source: {chunk.get('source_file', 'Unknown')}")
+                    typer.echo(f"   Content: {chunk.get('content', '')[:200]}...")
+                    typer.echo()
+            else:
+                typer.echo("ERROR: No matching context found.")
+                typer.echo("Try:")
+                typer.echo("    • Different tool name or topic")
+                typer.echo("    • Lower similarity threshold")
+                typer.echo("    • Check available tools with 'llmcontext get'")
+            return
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+    
+    # Fallback to local configuration
+    typer.echo("ERROR: Vector database query requires sidecar server.")
+    typer.echo("Please start the sidecar server with: python sidecar/app.py")
+    typer.echo("Or use the vectordb command for direct database access.")
+    raise typer.Exit(1)
+
+
+@app.command()
+def server(
+    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host to bind to"),
+    port: int = typer.Option(8001, "--port", "-p", help="Port to bind to"),
+    reload: bool = typer.Option(True, "--reload/--no-reload", help="Enable auto-reload on file changes")
+):
+    """
+    Start the LLMContext sidecar server.
+    
+    The sidecar server provides API endpoints for tool management and context retrieval.
+    """
+    try:
+        import uvicorn
+        import sys
+        from pathlib import Path
+        
+        # Get the path to the sidecar app
+        sidecar_app_path = Path(__file__).parent.parent.parent / "sidecar" / "app.py"
+        
+        if not sidecar_app_path.exists():
+            typer.echo(f"ERROR: Sidecar app not found at: {sidecar_app_path}")
+            typer.echo("Please ensure the sidecar directory exists with app.py")
+            raise typer.Exit(1)
+        
+        typer.echo(f"STARTING: Starting LLMContext sidecar server...")
+        typer.echo(f"HOST: Host: {host}")
+        typer.echo(f"HOST: Port: {port}")
+        typer.echo(f"RELOAD: Auto-reload: {'enabled' if reload else 'disabled'}")
+        typer.echo(f"URL: URL: http://{host}:{port}")
+        typer.echo(f"TOPICS: API docs: http://{host}:{port}/docs")
+        typer.echo()
+        typer.echo("Press Ctrl+C to stop the server")
+        typer.echo()
+        
+        # Start the server
+        uvicorn.run(
+            "sidecar.app:app",
+            host=host,
+            port=port,
+            reload=reload,
+            log_level="info"
+        )
+        
+    except ImportError:
+        typer.echo("ERROR: uvicorn not installed. Install with: pip install uvicorn")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"ERROR: Failed to start server: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def list_tools(
+    config_file: Optional[Path] = typer.Option(None, "--config", "-c", help="Path to config file"),
+    use_sidecar: bool = typer.Option(True, "--sidecar/--no-sidecar", help="Use sidecar server if available")
+):
+    """
+    List all configured tools/frameworks.
+    """
+    if use_sidecar and check_sidecar_available():
+        try:
+            # Try to use sidecar server
+            result = call_sidecar_get_stack()
+            tools = result.get("tools", [])
+            total = result.get("total", 0)
+            
+            if total == 0:
+                typer.echo("INFO: No tools configured.")
+                return
+            
+            typer.echo(f"INFO: Configured tools ({total} total):")
+            for tool in tools:
+                name = tool.get("name", "Unknown")
+                version = tool.get("version", "latest")
+                typer.echo(f"    • {name} (version: {version})")
+            return
+        except Exception as e:
+            typer.echo(f"WARNING:  Sidecar server error: {e}")
+            typer.echo("Falling back to local configuration...")
+    
+    # Fallback to local configuration
+    config_path = config_file or get_config_path()
+    
+    if not config_path.exists():
+        typer.echo(f"ERROR: Configuration file not found: {config_path}")
+        typer.echo("Run 'llmcontext init' to create a configuration file.")
+        raise typer.Exit(1)
+    
+    try:
+        with open(config_path, "r") as f:
+            config = json.load(f)
+    except json.JSONDecodeError:
+        typer.echo("ERROR: Invalid JSON in configuration file.")
+        raise typer.Exit(1)
+    
+    if "stack" not in config or not config["stack"]:
+        typer.echo("INFO: No tools configured.")
+        return
+    
+    typer.echo("INFO: Configured tools:")
     for tool_entry in config["stack"]:
         if "@" in tool_entry:
             tool_name, version = tool_entry.split("@", 1)
-            typer.echo(f"  • {tool_name} (version: {version})")
+            typer.echo(f"    • {tool_name} (version: {version})")
         else:
-            typer.echo(f"  • {tool_entry} (version: latest)")
+            typer.echo(f"    • {tool_entry} (version: latest)")
 
 
 @app.command()
@@ -251,7 +575,7 @@ def detect(
     config_path = config_file or get_config_path()
     
     if not config_path.exists():
-        typer.echo(f"❌ Configuration file not found: {config_path}")
+        typer.echo(f"ERROR: Configuration file not found: {config_path}")
         typer.echo("Run 'llmcontext init' to create a configuration file.")
         raise typer.Exit(1)
     
@@ -277,7 +601,7 @@ def detect(
             if not groups:  # Skip empty ecosystems
                 continue
                 
-            typer.echo(f"📦 {ecosystem} Frameworks")
+            typer.echo(f"PACKAGES: {ecosystem} Frameworks")
             
             # Show main dependencies first
             if "main" in groups and groups["main"]:
@@ -286,30 +610,30 @@ def detect(
             
             # Show dev dependencies
             if "dev" in groups and groups["dev"]:
-                typer.echo("  🧪 Dev Tools")
+                typer.echo("  DEV TOOLS: Dev Tools")
                 for framework in groups["dev"]:
                     _display_framework(framework, indent="    ")
             
             # Show inferred frameworks
             if "inferred" in groups and groups["inferred"]:
-                typer.echo("  🔍 Inferred")
+                typer.echo("  SEARCH: Inferred")
                 for framework in groups["inferred"]:
                     _display_framework(framework, indent="    ")
             
             # Show ecosystem summary
             ecosystem_count = sum(len(frameworks) for frameworks in groups.values())
-            typer.echo(f"  └─ {ecosystem_count} frameworks detected")
+            typer.echo(f"    └- {ecosystem_count} frameworks detected")
             typer.echo()
         
         # Show overall summary
         unique_frameworks = len(set(f.name for f in detected_frameworks))
-        typer.echo(f"✅ Total: {unique_frameworks} frameworks detected from {total_files} files")
+        typer.echo(f"SUCCESS: Total: {unique_frameworks} frameworks detected from {total_files} files")
         
     except ImportError as e:
-        typer.echo(f"❌ Error importing detector: {e}")
+        typer.echo(f"ERROR: Error importing detector: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during detection: {e}")
+        typer.echo(f"ERROR: Error during detection: {e}")
         raise typer.Exit(1)
 
 
@@ -332,7 +656,7 @@ def collect(
             available_tools = collector.get_available_tools()
             typer.echo(f"Available tools for documentation collection ({len(available_tools)}):")
             for tool_name in sorted(available_tools):
-                typer.echo(f"  • {tool_name}")
+                typer.echo(f"    • {tool_name}")
             return
         
         if all_tools:
@@ -342,19 +666,19 @@ def collect(
             successful = [name for name, success in results.items() if success]
             failed = [name for name, success in results.items() if not success]
             
-            typer.echo(f"\n✅ Successfully collected documentation for {len(successful)} tools:")
+            typer.echo(f"\nSUCCESS: Successfully collected documentation for {len(successful)} tools:")
             for tool_name in successful:
-                typer.echo(f"  • {tool_name}")
+                typer.echo(f"    • {tool_name}")
             
             if failed:
-                typer.echo(f"\n❌ Failed to collect documentation for {len(failed)} tools:")
+                typer.echo(f"\nERROR: Failed to collect documentation for {len(failed)} tools:")
                 for tool_name in failed:
-                    typer.echo(f"  • {tool_name}")
+                    typer.echo(f"    • {tool_name}")
             
             return
         
         if not tool:
-            typer.echo("❌ Please specify a tool name or use --all to collect for all tools")
+            typer.echo("ERROR: Please specify a tool name or use --all to collect for all tools")
             typer.echo("Use --list to see available tools")
             raise typer.Exit(1)
         
@@ -362,18 +686,18 @@ def collect(
         success = asyncio.run(collector.collect_documentation(tool, force_refresh))
         
         if success:
-            typer.echo(f"✅ Successfully collected documentation for {tool}")
-            typer.echo(f"📁 Documentation saved to: raw_docs/{tool}.md")
+            typer.echo(f"SUCCESS: Successfully collected documentation for {tool}")
+            typer.echo(f"DIR: Documentation saved to: raw_docs/{tool}.md")
         else:
-            typer.echo(f"❌ Failed to collect documentation for {tool}")
+            typer.echo(f"ERROR: Failed to collect documentation for {tool}")
             typer.echo("Use --list to see available tools")
             raise typer.Exit(1)
             
     except ImportError as e:
-        typer.echo(f"❌ Error importing collector: {e}")
+        typer.echo(f"ERROR: Error importing collector: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during collection: {e}")
+        typer.echo(f"ERROR: Error during collection: {e}")
         raise typer.Exit(1)
 
 
@@ -400,7 +724,7 @@ def chunk(
         }
         
         if strategy not in strategy_map:
-            typer.echo(f"❌ Invalid strategy: {strategy}")
+            typer.echo(f"ERROR: Invalid strategy: {strategy}")
             typer.echo("Valid strategies: semantic, token_count, hybrid")
             raise typer.Exit(1)
         
@@ -415,7 +739,7 @@ def chunk(
         if input_file:
             # Chunk single file
             if not input_file.exists():
-                typer.echo(f"❌ Input file not found: {input_file}")
+                typer.echo(f"ERROR: Input file not found: {input_file}")
                 raise typer.Exit(1)
             
             typer.echo(f"Chunking file: {input_file}")
@@ -423,18 +747,18 @@ def chunk(
             
             # Show statistics
             stats = chunker.get_chunk_statistics(chunks)
-            typer.echo(f"✅ Created {stats['total_chunks']} chunks")
-            typer.echo(f"📊 Total tokens: {stats['total_tokens']}")
-            typer.echo(f"📊 Average tokens per chunk: {stats['average_tokens']:.1f}")
-            typer.echo(f"📊 Token distribution: {stats['token_distribution']}")
+            typer.echo(f"SUCCESS: Created {stats['total_chunks']} chunks")
+            typer.echo(f"STATS: Total tokens: {stats['total_tokens']}")
+            typer.echo(f"STATS: Average tokens per chunk: {stats['average_tokens']:.1f}")
+            typer.echo(f"STATS: Token distribution: {stats['token_distribution']}")
             
             if output_dir:
-                typer.echo(f"📁 Chunks saved to: {output_dir}")
+                typer.echo(f"DIR: Chunks saved to: {output_dir}")
         
         elif input_dir:
             # Chunk directory
             if not input_dir.exists():
-                typer.echo(f"❌ Input directory not found: {input_dir}")
+                typer.echo(f"ERROR: Input directory not found: {input_dir}")
                 raise typer.Exit(1)
             
             if not output_dir:
@@ -454,25 +778,25 @@ def chunk(
                     total_chunks += len(chunks)
                     total_tokens += sum(chunker.count_tokens(chunk.content) for chunk in chunks)
                     
-                    typer.echo(f"  ✅ {file_path.name}: {len(chunks)} chunks")
+                    typer.echo(f"  SUCCESS: {file_path.name}: {len(chunks)} chunks")
                     
                 except Exception as e:
-                    typer.echo(f"  ❌ Error chunking {file_path.name}: {e}")
+                    typer.echo(f"  ERROR: Error chunking {file_path.name}: {e}")
                     continue
             
-            typer.echo(f"\n✅ Total: {total_chunks} chunks from {len(results)} files")
-            typer.echo(f"📊 Total tokens: {total_tokens}")
-            typer.echo(f"📁 Chunks saved to: {output_dir}")
+            typer.echo(f"\nSUCCESS: Total: {total_chunks} chunks from {len(results)} files")
+            typer.echo(f"STATS: Total tokens: {total_tokens}")
+            typer.echo(f"DIR: Chunks saved to: {output_dir}")
         
         else:
-            typer.echo("❌ Please specify either --input-file or --input-dir")
+            typer.echo("ERROR: Please specify either --input-file or --input-dir")
             raise typer.Exit(1)
             
     except ImportError as e:
-        typer.echo(f"❌ Error importing chunker: {e}")
+        typer.echo(f"ERROR: Error importing chunker: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during chunking: {e}")
+        typer.echo(f"ERROR: Error during chunking: {e}")
         raise typer.Exit(1)
 
 
@@ -493,7 +817,7 @@ def summarize(
         
         # Check for API key
         if not api_key and not os.getenv("OPENAI_API_KEY"):
-            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("ERROR: OpenAI API key is required.")
             typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
             raise typer.Exit(1)
         
@@ -504,7 +828,7 @@ def summarize(
         )
         
         if dry_run:
-            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            typer.echo("SEARCH: DRY RUN MODE - No API calls will be made")
             
             if input_file:
                 typer.echo(f"Would summarize: {input_file}")
@@ -512,35 +836,35 @@ def summarize(
                 files = list(input_dir.glob("*.md"))
                 typer.echo(f"Would summarize {len(files)} files from: {input_dir}")
                 for file in files:
-                    typer.echo(f"  • {file.name}")
+                    typer.echo(f"    • {file.name}")
             else:
-                typer.echo("❌ Please specify either --input-file or --input-dir")
+                typer.echo("ERROR: Please specify either --input-file or --input-dir")
                 raise typer.Exit(1)
             return
         
         if input_file:
             # Summarize single file
             if not input_file.exists():
-                typer.echo(f"❌ Input file not found: {input_file}")
+                typer.echo(f"ERROR: Input file not found: {input_file}")
                 raise typer.Exit(1)
             
             typer.echo(f"Summarizing file: {input_file}")
             result = summarizer.summarize_file(input_file, output_dir)
             
             # Show results
-            typer.echo(f"✅ Summarized: {input_file.name}")
-            typer.echo(f"📊 Token reduction: {result.token_reduction:.1f}%")
-            typer.echo(f"📊 Original tokens: {result.original_tokens}")
-            typer.echo(f"📊 Summarized tokens: {result.summarized_tokens}")
-            typer.echo(f"⏱️  Processing time: {result.processing_time:.2f}s")
+            typer.echo(f"SUCCESS: Summarized: {input_file.name}")
+            typer.echo(f"STATS: Token reduction: {result.token_reduction:.1f}%")
+            typer.echo(f"STATS: Original tokens: {result.original_tokens}")
+            typer.echo(f"STATS: Summarized tokens: {result.summarized_tokens}")
+            typer.echo(f"TIME:  Processing time: {result.processing_time:.2f}s")
             
             if output_dir:
-                typer.echo(f"📁 Summary saved to: {output_dir}")
+                typer.echo(f"DIR: Summary saved to: {output_dir}")
         
         elif input_dir:
             # Summarize directory
             if not input_dir.exists():
-                typer.echo(f"❌ Input directory not found: {input_dir}")
+                typer.echo(f"ERROR: Input directory not found: {input_dir}")
                 raise typer.Exit(1)
             
             if not output_dir:
@@ -555,22 +879,22 @@ def summarize(
             
             # Show statistics
             stats = summarizer.get_summary_statistics(results)
-            typer.echo(f"\n✅ Summarized {stats['total_files']} files")
-            typer.echo(f"📊 Overall reduction: {stats['overall_reduction_percent']:.1f}%")
-            typer.echo(f"📊 Average reduction: {stats['average_reduction_percent']:.1f}%")
-            typer.echo(f"📊 Total processing time: {stats['total_processing_time']:.2f}s")
-            typer.echo(f"📊 Token distribution: {stats['token_distribution']}")
-            typer.echo(f"📁 Summaries saved to: {output_dir}")
+            typer.echo(f"\nSUCCESS: Summarized {stats['total_files']} files")
+            typer.echo(f"STATS: Overall reduction: {stats['overall_reduction_percent']:.1f}%")
+            typer.echo(f"STATS: Average reduction: {stats['average_reduction_percent']:.1f}%")
+            typer.echo(f"STATS: Total processing time: {stats['total_processing_time']:.2f}s")
+            typer.echo(f"STATS: Token distribution: {stats['token_distribution']}")
+            typer.echo(f"DIR: Summaries saved to: {output_dir}")
         
         else:
-            typer.echo("❌ Please specify either --input-file or --input-dir")
+            typer.echo("ERROR: Please specify either --input-file or --input-dir")
             raise typer.Exit(1)
             
     except ImportError as e:
-        typer.echo(f"❌ Error importing summarizer: {e}")
+        typer.echo(f"ERROR: Error importing summarizer: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during summarization: {e}")
+        typer.echo(f"ERROR: Error during summarization: {e}")
         raise typer.Exit(1)
 
 
@@ -591,7 +915,7 @@ def process(
         
         # Check for API key
         if not api_key and not os.getenv("OPENAI_API_KEY"):
-            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("ERROR: OpenAI API key is required.")
             typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
             raise typer.Exit(1)
         
@@ -608,7 +932,7 @@ def process(
         )
         
         if dry_run:
-            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            typer.echo("SEARCH: DRY RUN MODE - No API calls will be made")
             typer.echo(f"Tool: {tool_name}")
             typer.echo(f"Chunks directory: {chunks_dir}")
             typer.echo(f"Output directory: {output_dir}")
@@ -620,7 +944,7 @@ def process(
         
         # Check if chunks directory exists
         if not chunks_dir.exists():
-            typer.echo(f"❌ Chunks directory not found: {chunks_dir}")
+            typer.echo(f"ERROR: Chunks directory not found: {chunks_dir}")
             raise typer.Exit(1)
         
         typer.echo(f"Processing documentation for tool: {tool_name}")
@@ -636,33 +960,33 @@ def process(
         results = processor.process_tool_documentation(tool_name, chunks_dir, topic_list)
         
         # Show results
-        typer.echo(f"\n✅ Processing completed!")
-        typer.echo(f"📊 Topics processed: {len(results)}")
+        typer.echo(f"\nSUCCESS: Processing completed!")
+        typer.echo(f"STATS: Topics processed: {len(results)}")
         
         total_original_chunks = sum(len(result.original_chunks) for result in results.values())
         total_summarized_chunks = sum(len(result.summarized_chunks) for result in results.values())
         total_processing_time = sum(result.processing_stats['total_processing_time'] for result in results.values())
         
-        typer.echo(f"📊 Total chunks: {total_original_chunks} → {total_summarized_chunks}")
-        typer.echo(f"⏱️  Total processing time: {total_processing_time:.2f}s")
+        typer.echo(f"STATS: Total chunks: {total_original_chunks} → {total_summarized_chunks}")
+        typer.echo(f"TIME:  Total processing time: {total_processing_time:.2f}s")
         
         # Show per-topic results
         for topic, result in results.items():
             stats = result.processing_stats
-            typer.echo(f"  • {topic}: {len(result.original_chunks)} chunks, {stats['overall_reduction_percent']:.1f}% reduction")
+            typer.echo(f"    • {topic}: {len(result.original_chunks)} chunks, {stats['overall_reduction_percent']:.1f}% reduction")
         
-        typer.echo(f"\n📁 Output saved to: {output_dir}/{tool_name}/")
-        typer.echo(f"📄 Files created:")
+        typer.echo(f"\nDIR: Output saved to: {output_dir}/{tool_name}/")
+        typer.echo(f"FILES: Files created:")
         for topic in results.keys():
-            typer.echo(f"  • {tool_name}/{topic}/{topic}.md")
-            typer.echo(f"  • {tool_name}/{topic}/{topic}.json")
-        typer.echo(f"  • {tool_name}/{tool_name}_summary.md")
+            typer.echo(f"    • {tool_name}/{topic}/{topic}.md")
+            typer.echo(f"    • {tool_name}/{topic}/{topic}.json")
+        typer.echo(f"    • {tool_name}/{tool_name}_summary.md")
         
     except ImportError as e:
-        typer.echo(f"❌ Error importing processor: {e}")
+        typer.echo(f"ERROR: Error importing processor: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during processing: {e}")
+        typer.echo(f"ERROR: Error during processing: {e}")
         raise typer.Exit(1)
 
 
@@ -683,7 +1007,7 @@ def embed(
         
         # Check for API key
         if not api_key and not os.getenv("OPENAI_API_KEY"):
-            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("ERROR: OpenAI API key is required.")
             typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
             raise typer.Exit(1)
         
@@ -704,7 +1028,7 @@ def embed(
         )
         
         if dry_run:
-            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            typer.echo("SEARCH: DRY RUN MODE - No API calls will be made")
             typer.echo(f"Documentation directory: {docs_dir}")
             typer.echo(f"Output directory: {output_dir}")
             typer.echo(f"Model: {model}")
@@ -721,7 +1045,7 @@ def embed(
         
         # Check if docs directory exists
         if not docs_dir.exists():
-            typer.echo(f"❌ Documentation directory not found: {docs_dir}")
+            typer.echo(f"ERROR: Documentation directory not found: {docs_dir}")
             raise typer.Exit(1)
         
         typer.echo(f"Generating embeddings from processed documentation...")
@@ -742,32 +1066,32 @@ def embed(
         # Show results
         stats = generator.get_embedding_statistics(results)
         
-        typer.echo(f"\n✅ Embedding generation completed!")
-        typer.echo(f"📊 Tools processed: {stats['total_tools']}")
-        typer.echo(f"📊 Topics processed: {stats['total_topics']}")
-        typer.echo(f"📊 Total embeddings: {stats['total_embeddings']}")
-        typer.echo(f"📊 Total tokens: {stats['total_tokens']}")
-        typer.echo(f"⏱️  Total processing time: {stats['total_processing_time']:.2f}s")
-        typer.echo(f"📊 Embeddings per second: {stats['embeddings_per_second']:.2f}")
-        typer.echo(f"📊 Average processing time per embedding: {stats['average_processing_time_per_embedding']:.3f}s")
+        typer.echo(f"\nSUCCESS: Embedding generation completed!")
+        typer.echo(f"STATS: Tools processed: {stats['total_tools']}")
+        typer.echo(f"STATS: Topics processed: {stats['total_topics']}")
+        typer.echo(f"STATS: Total embeddings: {stats['total_embeddings']}")
+        typer.echo(f"STATS: Total tokens: {stats['total_tokens']}")
+        typer.echo(f"TIME:  Total processing time: {stats['total_processing_time']:.2f}s")
+        typer.echo(f"STATS: Embeddings per second: {stats['embeddings_per_second']:.2f}")
+        typer.echo(f"STATS: Average processing time per embedding: {stats['average_processing_time_per_embedding']:.3f}s")
         
         # Show per-tool results
         for tool_name, tool_results in results.items():
             tool_embeddings = sum(len(batch.embeddings) for batch in tool_results.values())
             tool_topics = len(tool_results)
-            typer.echo(f"  • {tool_name}: {tool_embeddings} embeddings from {tool_topics} topics")
+            typer.echo(f"    • {tool_name}: {tool_embeddings} embeddings from {tool_topics} topics")
         
-        typer.echo(f"\n📁 Embeddings saved to: {output_dir}/")
-        typer.echo(f"📄 File formats:")
-        typer.echo(f"  • <tool>/<topic>_embeddings.json - Full data with metadata")
-        typer.echo(f"  • <tool>/<topic>_embeddings.npy - Numpy array for efficient loading")
-        typer.echo(f"  • <tool>/<topic>_metadata.json - Batch metadata")
+        typer.echo(f"\nDIR: Embeddings saved to: {output_dir}/")
+        typer.echo(f"FILES: File formats:")
+        typer.echo(f"    • <tool>/<topic>_embeddings.json - Full data with metadata")
+        typer.echo(f"    • <tool>/<topic>_embeddings.npy - Numpy array for efficient loading")
+        typer.echo(f"    • <tool>/<topic>_metadata.json - Batch metadata")
         
     except ImportError as e:
-        typer.echo(f"❌ Error importing embeddings module: {e}")
+        typer.echo(f"ERROR: Error importing embeddings module: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during embedding generation: {e}")
+        typer.echo(f"ERROR: Error during embedding generation: {e}")
         raise typer.Exit(1)
 
 
@@ -793,7 +1117,7 @@ def vectordb(
         
         # Check for API key if needed
         if action == "add" and not api_key and not os.getenv("OPENAI_API_KEY"):
-            typer.echo("❌ OpenAI API key is required for adding embeddings.")
+            typer.echo("ERROR: OpenAI API key is required for adding embeddings.")
             typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
             raise typer.Exit(1)
         
@@ -815,11 +1139,11 @@ def vectordb(
         
         if action == "add":
             if not embeddings_dir:
-                typer.echo("❌ embeddings_dir is required for 'add' action")
+                typer.echo("ERROR: embeddings_dir is required for 'add' action")
                 raise typer.Exit(1)
             
             if dry_run:
-                typer.echo("🔍 DRY RUN MODE - No changes will be made")
+                typer.echo("SEARCH: DRY RUN MODE - No changes will be made")
                 typer.echo(f"Would add embeddings from: {embeddings_dir}")
                 typer.echo(f"Persist directory: {persist_dir}")
                 typer.echo(f"Collection: {collection_name}")
@@ -830,7 +1154,7 @@ def vectordb(
                 return
             
             if not embeddings_dir.exists():
-                typer.echo(f"❌ Embeddings directory not found: {embeddings_dir}")
+                typer.echo(f"ERROR: Embeddings directory not found: {embeddings_dir}")
                 raise typer.Exit(1)
             
             typer.echo(f"Adding embeddings to vector database...")
@@ -842,18 +1166,18 @@ def vectordb(
                 embeddings_dir, tools_list, topics_list, batch_size
             )
             
-            typer.echo(f"\n✅ Embeddings added successfully!")
-            typer.echo(f"📊 Files processed: {result['files_processed']}")
-            typer.echo(f"📊 Total embeddings added: {result['total_added']}")
+            typer.echo(f"\nSUCCESS: Embeddings added successfully!")
+            typer.echo(f"STATS: Files processed: {result['files_processed']}")
+            typer.echo(f"STATS: Total embeddings added: {result['total_added']}")
             
             if result['results']:
-                typer.echo(f"\n📄 File results:")
+                typer.echo(f"\nFILES: File results:")
                 for file_result in result['results']:
-                    typer.echo(f"  • {file_result['file']}: {file_result['added_embeddings']} embeddings")
+                    typer.echo(f"    • {file_result['file']}: {file_result['added_embeddings']} embeddings")
         
         elif action == "search":
             if not query:
-                typer.echo("❌ query is required for 'search' action")
+                typer.echo("ERROR: query is required for 'search' action")
                 raise typer.Exit(1)
             
             typer.echo(f"Searching vector database...")
@@ -874,10 +1198,10 @@ def vectordb(
             results = db.search_by_text(query, n_results, filter_metadata)
             
             if not results:
-                typer.echo("❌ No results found")
+                typer.echo("ERROR: No results found")
                 return
             
-            typer.echo(f"\n✅ Found {len(results)} results:")
+            typer.echo(f"\nSUCCESS: Found {len(results)} results:")
             
             for i, result in enumerate(results, 1):
                 typer.echo(f"\n{i}. {result.chunk_id}")
@@ -891,16 +1215,16 @@ def vectordb(
             info = db.get_collection_info()
             
             typer.echo(f"Vector Database Information:")
-            typer.echo(f"📊 Collection: {info.name}")
-            typer.echo(f"📊 Total documents: {info.count}")
-            typer.echo(f"📊 Metadata: {info.metadata}")
+            typer.echo(f"STATS: Collection: {info.name}")
+            typer.echo(f"STATS: Total documents: {info.count}")
+            typer.echo(f"STATS: Metadata: {info.metadata}")
             
             # Get available tools and topics
             tools = db.get_tools()
-            typer.echo(f"📊 Available tools ({len(tools)}): {', '.join(tools)}")
+            typer.echo(f"STATS: Available tools ({len(tools)}): {', '.join(tools)}")
             
             topics = db.get_topics()
-            typer.echo(f"📊 Available topics ({len(topics)}): {', '.join(topics)}")
+            typer.echo(f"STATS: Available topics ({len(topics)}): {', '.join(topics)}")
         
         elif action == "list":
             if tool_filter:
@@ -908,20 +1232,20 @@ def vectordb(
                 topics = db.get_topics(tool_filter)
                 typer.echo(f"Topics for tool '{tool_filter}' ({len(topics)}):")
                 for topic in topics:
-                    typer.echo(f"  • {topic}")
+                    typer.echo(f"    • {topic}")
             else:
                 # List tools
                 tools = db.get_tools()
                 typer.echo(f"Available tools ({len(tools)}):")
                 for tool in tools:
                     topics = db.get_topics(tool)
-                    typer.echo(f"  • {tool} ({len(topics)} topics)")
+                    typer.echo(f"    • {tool} ({len(topics)} topics)")
                     for topic in topics:
                         typer.echo(f"    - {topic}")
         
         elif action == "reset":
             if dry_run:
-                typer.echo("🔍 DRY RUN MODE - No changes will be made")
+                typer.echo("SEARCH: DRY RUN MODE - No changes will be made")
                 typer.echo(f"Would reset collection: {collection_name}")
                 return
             
@@ -929,21 +1253,21 @@ def vectordb(
             success = db.reset_collection()
             
             if success:
-                typer.echo("✅ Collection reset successfully")
+                typer.echo("SUCCESS: Collection reset successfully")
             else:
-                typer.echo("❌ Failed to reset collection")
+                typer.echo("ERROR: Failed to reset collection")
                 raise typer.Exit(1)
         
         else:
-            typer.echo(f"❌ Unknown action: {action}")
+            typer.echo(f"ERROR: Unknown action: {action}")
             typer.echo("Valid actions: add, search, info, list, reset")
             raise typer.Exit(1)
         
     except ImportError as e:
-        typer.echo(f"❌ Error importing vectordb module: {e}")
+        typer.echo(f"ERROR: Error importing vectordb module: {e}")
         raise typer.Exit(1)
     except Exception as e:
-        typer.echo(f"❌ Error during vector database operation: {e}")
+        typer.echo(f"ERROR: Error during vector database operation: {e}")
         raise typer.Exit(1)
 
 
@@ -1087,7 +1411,7 @@ def _display_framework(framework, indent: str = "  ") -> None:
     
     # Build the display string
     display_parts = [
-        f"{indent}• {framework.name}{version_info}{source_info}{confidence_info}{tags_info}"
+        f"{indent}  • {framework.name}{version_info}{source_info}{confidence_info}{tags_info}"
     ]
     
     typer.echo("".join(display_parts))
