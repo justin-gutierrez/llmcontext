@@ -54,8 +54,8 @@ def load_config() -> dict:
                 return json.load(f)
         except json.JSONDecodeError:
             typer.echo("Error: Invalid JSON in .llmcontext.json", err=True)
-            return {}
-    return {}
+            return {"stack": []}
+    return {"stack": []}
 
 
 def save_config(config: dict) -> None:
@@ -82,38 +82,7 @@ def init(
         raise typer.Exit(1)
     
     default_config = {
-        "version": "1.0.0",
-        "project": {
-            "name": Path.cwd().name,
-            "description": "",
-            "frameworks": [],
-            "documentation_dir": "docs",
-            "cache_dir": ".llmcontext_cache"
-        },
-        "settings": {
-            "auto_detect": True,
-            "include_dev_dependencies": False,
-            "compression_level": "medium",
-            "embedding_model": "default",
-            "max_context_length": 4000
-        },
-        "api": {
-            "host": "127.0.0.1",
-            "port": 8000,
-            "enable_cors": True,
-            "rate_limit": 100
-        },
-        "tools": {
-            "enabled": [],
-            "custom_patterns": {},
-            "exclude_patterns": [
-                "node_modules",
-                "__pycache__",
-                ".git",
-                "dist",
-                "build"
-            ]
-        }
+        "stack": []
     }
     
     save_config(default_config)
@@ -147,41 +116,37 @@ def add(
         typer.echo("❌ Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
-    # Ensure the tools section exists
-    if "tools" not in config:
-        config["tools"] = {}
+    # Ensure the stack section exists
+    if "stack" not in config:
+        config["stack"] = []
     
-    if "enabled" not in config["tools"]:
-        config["tools"]["enabled"] = []
+    # Create tool entry with version if specified
+    tool_entry = tool.value
+    if version:
+        tool_entry = f"{tool.value}@{version}"
     
-    # Check if tool is already enabled
-    if tool.value in config["tools"]["enabled"]:
-        typer.echo(f"⚠️  Tool '{tool.value}' is already enabled.")
-        return
+    # Check if tool is already in stack
+    for existing_tool in config["stack"]:
+        if existing_tool.startswith(f"{tool.value}@"):
+            if existing_tool == tool_entry:
+                typer.echo(f"⚠️  Tool '{tool_entry}' is already in the stack.")
+                return
+            else:
+                # Update existing tool with new version
+                config["stack"].remove(existing_tool)
+                break
+        elif existing_tool == tool.value and not version:
+            typer.echo(f"⚠️  Tool '{tool.value}' is already in the stack.")
+            return
     
-    # Add tool to enabled list
-    config["tools"]["enabled"].append(tool.value)
-    
-    # Add tool-specific configuration if needed
-    if "tool_configs" not in config["tools"]:
-        config["tools"]["tool_configs"] = {}
-    
-    tool_config = {
-        "version": version,
-        "detection_patterns": get_default_patterns(tool),
-        "documentation_sources": get_documentation_sources(tool),
-        "priority": "normal"
-    }
-    
-    config["tools"]["tool_configs"][tool.value] = tool_config
+    # Add tool to stack
+    config["stack"].append(tool_entry)
     
     # Save updated configuration
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     
-    typer.echo(f"✅ Added '{tool.value}' to configuration.")
-    if version:
-        typer.echo(f"📌 Tracking version: {version}")
+    typer.echo(f"✅ Added '{tool_entry}' to stack.")
     
     # Show next steps
     typer.echo(f"🔍 Run 'llmcontext detect' to scan for {tool.value} in your codebase.")
@@ -208,26 +173,27 @@ def remove(
         typer.echo("❌ Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
-    if "tools" not in config or "enabled" not in config["tools"]:
+    if "stack" not in config:
         typer.echo("❌ No tools configured.")
         raise typer.Exit(1)
     
-    if tool not in config["tools"]["enabled"]:
-        typer.echo(f"⚠️  Tool '{tool}' is not enabled.")
+    # Find and remove the tool (with or without version)
+    removed = False
+    for existing_tool in config["stack"][:]:  # Create a copy to iterate
+        if existing_tool == tool or existing_tool.startswith(f"{tool}@"):
+            config["stack"].remove(existing_tool)
+            removed = True
+            break
+    
+    if not removed:
+        typer.echo(f"⚠️  Tool '{tool}' is not in the stack.")
         return
-    
-    # Remove from enabled list
-    config["tools"]["enabled"].remove(tool)
-    
-    # Remove tool-specific configuration
-    if "tool_configs" in config["tools"] and tool in config["tools"]["tool_configs"]:
-        del config["tools"]["tool_configs"][tool]
     
     # Save updated configuration
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
     
-    typer.echo(f"✅ Removed '{tool}' from configuration.")
+    typer.echo(f"✅ Removed '{tool}' from stack.")
 
 
 @app.command()
@@ -251,15 +217,17 @@ def list_tools(
         typer.echo("❌ Invalid JSON in configuration file.")
         raise typer.Exit(1)
     
-    if "tools" not in config or "enabled" not in config["tools"]:
+    if "stack" not in config or not config["stack"]:
         typer.echo("📋 No tools configured.")
         return
     
     typer.echo("📋 Configured tools:")
-    for tool in config["tools"]["enabled"]:
-        tool_config = config["tools"].get("tool_configs", {}).get(tool, {})
-        version = tool_config.get("version", "latest")
-        typer.echo(f"  • {tool} (version: {version})")
+    for tool_entry in config["stack"]:
+        if "@" in tool_entry:
+            tool_name, version = tool_entry.split("@", 1)
+            typer.echo(f"  • {tool_name} (version: {version})")
+        else:
+            typer.echo(f"  • {tool_entry} (version: latest)")
 
 
 @app.command()
