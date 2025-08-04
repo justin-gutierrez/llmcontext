@@ -666,6 +666,287 @@ def process(
         raise typer.Exit(1)
 
 
+@app.command()
+def embed(
+    docs_dir: Path = typer.Argument(..., help="Directory containing processed documentation"),
+    output_dir: Path = typer.Option(Path("embeddings"), "--output-dir", "-o", help="Output directory for embeddings"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="OpenAI API key (or set OPENAI_API_KEY env var)"),
+    model: str = typer.Option("text-embedding-3-large", "--model", "-m", help="OpenAI embedding model to use"),
+    tools: Optional[str] = typer.Option(None, "--tools", "-t", help="Comma-separated list of tools to process"),
+    topics: Optional[str] = typer.Option(None, "--topics", help="Comma-separated list of topics to process"),
+    batch_size: int = typer.Option(100, "--batch-size", "-b", help="Number of texts to embed in a single API call"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be processed without making API calls")
+):
+    """Generate embeddings from processed documentation chunks."""
+    try:
+        from llmcontext.core.embeddings import EmbeddingGenerator
+        
+        # Check for API key
+        if not api_key and not os.getenv("OPENAI_API_KEY"):
+            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
+            raise typer.Exit(1)
+        
+        # Parse tools and topics
+        tools_list = None
+        if tools:
+            tools_list = [t.strip() for t in tools.split(",")]
+        
+        topics_list = None
+        if topics:
+            topics_list = [t.strip() for t in topics.split(",")]
+        
+        generator = EmbeddingGenerator(
+            api_key=api_key,
+            model=model,
+            batch_size=batch_size,
+            output_dir=output_dir
+        )
+        
+        if dry_run:
+            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            typer.echo(f"Documentation directory: {docs_dir}")
+            typer.echo(f"Output directory: {output_dir}")
+            typer.echo(f"Model: {model}")
+            typer.echo(f"Batch size: {batch_size}")
+            if tools_list:
+                typer.echo(f"Tools: {', '.join(tools_list)}")
+            else:
+                typer.echo("Tools: All available")
+            if topics_list:
+                typer.echo(f"Topics: {', '.join(topics_list)}")
+            else:
+                typer.echo("Topics: All available")
+            return
+        
+        # Check if docs directory exists
+        if not docs_dir.exists():
+            typer.echo(f"❌ Documentation directory not found: {docs_dir}")
+            raise typer.Exit(1)
+        
+        typer.echo(f"Generating embeddings from processed documentation...")
+        typer.echo(f"Documentation directory: {docs_dir}")
+        typer.echo(f"Output directory: {output_dir}")
+        typer.echo(f"Model: {model}")
+        typer.echo(f"Batch size: {batch_size}")
+        if tools_list:
+            typer.echo(f"Tools: {', '.join(tools_list)}")
+        if topics_list:
+            typer.echo(f"Topics: {', '.join(topics_list)}")
+        
+        # Generate embeddings
+        results = generator.generate_embeddings_from_processed_docs(
+            docs_dir, tools_list, topics_list
+        )
+        
+        # Show results
+        stats = generator.get_embedding_statistics(results)
+        
+        typer.echo(f"\n✅ Embedding generation completed!")
+        typer.echo(f"📊 Tools processed: {stats['total_tools']}")
+        typer.echo(f"📊 Topics processed: {stats['total_topics']}")
+        typer.echo(f"📊 Total embeddings: {stats['total_embeddings']}")
+        typer.echo(f"📊 Total tokens: {stats['total_tokens']}")
+        typer.echo(f"⏱️  Total processing time: {stats['total_processing_time']:.2f}s")
+        typer.echo(f"📊 Embeddings per second: {stats['embeddings_per_second']:.2f}")
+        typer.echo(f"📊 Average processing time per embedding: {stats['average_processing_time_per_embedding']:.3f}s")
+        
+        # Show per-tool results
+        for tool_name, tool_results in results.items():
+            tool_embeddings = sum(len(batch.embeddings) for batch in tool_results.values())
+            tool_topics = len(tool_results)
+            typer.echo(f"  • {tool_name}: {tool_embeddings} embeddings from {tool_topics} topics")
+        
+        typer.echo(f"\n📁 Embeddings saved to: {output_dir}/")
+        typer.echo(f"📄 File formats:")
+        typer.echo(f"  • <tool>/<topic>_embeddings.json - Full data with metadata")
+        typer.echo(f"  • <tool>/<topic>_embeddings.npy - Numpy array for efficient loading")
+        typer.echo(f"  • <tool>/<topic>_metadata.json - Batch metadata")
+        
+    except ImportError as e:
+        typer.echo(f"❌ Error importing embeddings module: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during embedding generation: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def vectordb(
+    action: str = typer.Argument(..., help="Action to perform: add, search, info, list, reset"),
+    embeddings_dir: Optional[Path] = typer.Argument(None, help="Directory containing embeddings files"),
+    query: Optional[str] = typer.Argument(None, help="Search query"),
+    persist_dir: Path = typer.Option(Path("chroma_db"), "--persist-dir", "-p", help="ChromaDB persist directory"),
+    collection_name: str = typer.Option("llmcontext_docs", "--collection", "-c", help="Collection name"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="OpenAI API key (or set OPENAI_API_KEY env var)"),
+    tools: Optional[str] = typer.Option(None, "--tools", "-t", help="Comma-separated list of tools to process"),
+    topics: Optional[str] = typer.Option(None, "--topics", help="Comma-separated list of topics to process"),
+    n_results: int = typer.Option(10, "--n-results", "-n", help="Number of search results to return"),
+    tool_filter: Optional[str] = typer.Option(None, "--tool-filter", help="Filter search results by tool"),
+    topic_filter: Optional[str] = typer.Option(None, "--topic-filter", help="Filter search results by topic"),
+    batch_size: int = typer.Option(100, "--batch-size", "-b", help="Batch size for adding embeddings"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be done without making changes")
+):
+    """Manage ChromaDB vector database for embeddings."""
+    try:
+        from llmcontext.core.vectordb import VectorDatabase
+        
+        # Check for API key if needed
+        if action == "add" and not api_key and not os.getenv("OPENAI_API_KEY"):
+            typer.echo("❌ OpenAI API key is required for adding embeddings.")
+            typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
+            raise typer.Exit(1)
+        
+        # Parse tools and topics
+        tools_list = None
+        if tools:
+            tools_list = [t.strip() for t in tools.split(",")]
+        
+        topics_list = None
+        if topics:
+            topics_list = [t.strip() for t in topics.split(",")]
+        
+        # Initialize vector database
+        db = VectorDatabase(
+            persist_directory=persist_dir,
+            collection_name=collection_name,
+            api_key=api_key
+        )
+        
+        if action == "add":
+            if not embeddings_dir:
+                typer.echo("❌ embeddings_dir is required for 'add' action")
+                raise typer.Exit(1)
+            
+            if dry_run:
+                typer.echo("🔍 DRY RUN MODE - No changes will be made")
+                typer.echo(f"Would add embeddings from: {embeddings_dir}")
+                typer.echo(f"Persist directory: {persist_dir}")
+                typer.echo(f"Collection: {collection_name}")
+                if tools_list:
+                    typer.echo(f"Tools: {', '.join(tools_list)}")
+                if topics_list:
+                    typer.echo(f"Topics: {', '.join(topics_list)}")
+                return
+            
+            if not embeddings_dir.exists():
+                typer.echo(f"❌ Embeddings directory not found: {embeddings_dir}")
+                raise typer.Exit(1)
+            
+            typer.echo(f"Adding embeddings to vector database...")
+            typer.echo(f"Embeddings directory: {embeddings_dir}")
+            typer.echo(f"Persist directory: {persist_dir}")
+            typer.echo(f"Collection: {collection_name}")
+            
+            result = db.add_embeddings_from_directory(
+                embeddings_dir, tools_list, topics_list, batch_size
+            )
+            
+            typer.echo(f"\n✅ Embeddings added successfully!")
+            typer.echo(f"📊 Files processed: {result['files_processed']}")
+            typer.echo(f"📊 Total embeddings added: {result['total_added']}")
+            
+            if result['results']:
+                typer.echo(f"\n📄 File results:")
+                for file_result in result['results']:
+                    typer.echo(f"  • {file_result['file']}: {file_result['added_embeddings']} embeddings")
+        
+        elif action == "search":
+            if not query:
+                typer.echo("❌ query is required for 'search' action")
+                raise typer.Exit(1)
+            
+            typer.echo(f"Searching vector database...")
+            typer.echo(f"Query: '{query}'")
+            typer.echo(f"Results: {n_results}")
+            
+            # Build filter metadata
+            filter_metadata = None
+            if tool_filter or topic_filter:
+                filter_metadata = {}
+                if tool_filter:
+                    filter_metadata['tool_name'] = tool_filter
+                    typer.echo(f"Tool filter: {tool_filter}")
+                if topic_filter:
+                    filter_metadata['topic'] = topic_filter
+                    typer.echo(f"Topic filter: {topic_filter}")
+            
+            results = db.search_by_text(query, n_results, filter_metadata)
+            
+            if not results:
+                typer.echo("❌ No results found")
+                return
+            
+            typer.echo(f"\n✅ Found {len(results)} results:")
+            
+            for i, result in enumerate(results, 1):
+                typer.echo(f"\n{i}. {result.chunk_id}")
+                typer.echo(f"   Tool: {result.tool_name}")
+                typer.echo(f"   Topic: {result.topic}")
+                typer.echo(f"   Similarity: {result.similarity_score:.3f}")
+                typer.echo(f"   Source: {result.source_file}")
+                typer.echo(f"   Content: {result.content[:100]}...")
+        
+        elif action == "info":
+            info = db.get_collection_info()
+            
+            typer.echo(f"Vector Database Information:")
+            typer.echo(f"📊 Collection: {info.name}")
+            typer.echo(f"📊 Total documents: {info.count}")
+            typer.echo(f"📊 Metadata: {info.metadata}")
+            
+            # Get available tools and topics
+            tools = db.get_tools()
+            typer.echo(f"📊 Available tools ({len(tools)}): {', '.join(tools)}")
+            
+            topics = db.get_topics()
+            typer.echo(f"📊 Available topics ({len(topics)}): {', '.join(topics)}")
+        
+        elif action == "list":
+            if tool_filter:
+                # List topics for specific tool
+                topics = db.get_topics(tool_filter)
+                typer.echo(f"Topics for tool '{tool_filter}' ({len(topics)}):")
+                for topic in topics:
+                    typer.echo(f"  • {topic}")
+            else:
+                # List tools
+                tools = db.get_tools()
+                typer.echo(f"Available tools ({len(tools)}):")
+                for tool in tools:
+                    topics = db.get_topics(tool)
+                    typer.echo(f"  • {tool} ({len(topics)} topics)")
+                    for topic in topics:
+                        typer.echo(f"    - {topic}")
+        
+        elif action == "reset":
+            if dry_run:
+                typer.echo("🔍 DRY RUN MODE - No changes will be made")
+                typer.echo(f"Would reset collection: {collection_name}")
+                return
+            
+            typer.echo(f"Resetting collection: {collection_name}")
+            success = db.reset_collection()
+            
+            if success:
+                typer.echo("✅ Collection reset successfully")
+            else:
+                typer.echo("❌ Failed to reset collection")
+                raise typer.Exit(1)
+        
+        else:
+            typer.echo(f"❌ Unknown action: {action}")
+            typer.echo("Valid actions: add, search, info, list, reset")
+            raise typer.Exit(1)
+        
+    except ImportError as e:
+        typer.echo(f"❌ Error importing vectordb module: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during vector database operation: {e}")
+        raise typer.Exit(1)
+
+
 def _group_frameworks_by_ecosystem(frameworks: List) -> Dict[str, Dict[str, List]]:
     """
     Group frameworks by ecosystem and dependency type.
