@@ -3,6 +3,7 @@ Main CLI application using Typer.
 """
 
 import json
+import os
 import typer
 from pathlib import Path
 from typing import Optional, List, Dict
@@ -373,6 +374,203 @@ def collect(
         raise typer.Exit(1)
     except Exception as e:
         typer.echo(f"❌ Error during collection: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def chunk(
+    input_file: Optional[Path] = typer.Argument(None, help="Input documentation file to chunk"),
+    input_dir: Optional[Path] = typer.Option(None, "--input-dir", "-i", help="Input directory containing documentation files"),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Output directory for chunks"),
+    target_size: int = typer.Option(1000, "--target-size", "-t", help="Target chunk size in tokens"),
+    min_size: int = typer.Option(800, "--min-size", help="Minimum chunk size in tokens"),
+    max_size: int = typer.Option(1200, "--max-size", help="Maximum chunk size in tokens"),
+    overlap: int = typer.Option(100, "--overlap", help="Overlap between chunks in tokens"),
+    strategy: str = typer.Option("hybrid", "--strategy", "-s", help="Chunking strategy: semantic, token_count, or hybrid")
+):
+    """Chunk documentation files into optimal sizes for LLM processing."""
+    try:
+        from llmcontext.core.chunker import DocumentationChunker, ChunkStrategy
+        
+        # Parse strategy
+        strategy_map = {
+            "semantic": ChunkStrategy.SEMANTIC,
+            "token_count": ChunkStrategy.TOKEN_COUNT,
+            "hybrid": ChunkStrategy.HYBRID
+        }
+        
+        if strategy not in strategy_map:
+            typer.echo(f"❌ Invalid strategy: {strategy}")
+            typer.echo("Valid strategies: semantic, token_count, hybrid")
+            raise typer.Exit(1)
+        
+        chunker = DocumentationChunker(
+            target_chunk_size=target_size,
+            min_chunk_size=min_size,
+            max_chunk_size=max_size,
+            overlap_tokens=overlap,
+            strategy=strategy_map[strategy]
+        )
+        
+        if input_file:
+            # Chunk single file
+            if not input_file.exists():
+                typer.echo(f"❌ Input file not found: {input_file}")
+                raise typer.Exit(1)
+            
+            typer.echo(f"Chunking file: {input_file}")
+            chunks = chunker.chunk_file(input_file, output_dir)
+            
+            # Show statistics
+            stats = chunker.get_chunk_statistics(chunks)
+            typer.echo(f"✅ Created {stats['total_chunks']} chunks")
+            typer.echo(f"📊 Total tokens: {stats['total_tokens']}")
+            typer.echo(f"📊 Average tokens per chunk: {stats['average_tokens']:.1f}")
+            typer.echo(f"📊 Token distribution: {stats['token_distribution']}")
+            
+            if output_dir:
+                typer.echo(f"📁 Chunks saved to: {output_dir}")
+        
+        elif input_dir:
+            # Chunk directory
+            if not input_dir.exists():
+                typer.echo(f"❌ Input directory not found: {input_dir}")
+                raise typer.Exit(1)
+            
+            if not output_dir:
+                output_dir = Path("chunks")
+            
+            typer.echo(f"Chunking directory: {input_dir}")
+            typer.echo(f"Output directory: {output_dir}")
+            
+            results = {}
+            total_chunks = 0
+            total_tokens = 0
+            
+            for file_path in input_dir.glob("*.md"):
+                try:
+                    chunks = chunker.chunk_file(file_path, output_dir)
+                    results[str(file_path)] = chunks
+                    total_chunks += len(chunks)
+                    total_tokens += sum(chunker.count_tokens(chunk.content) for chunk in chunks)
+                    
+                    typer.echo(f"  ✅ {file_path.name}: {len(chunks)} chunks")
+                    
+                except Exception as e:
+                    typer.echo(f"  ❌ Error chunking {file_path.name}: {e}")
+                    continue
+            
+            typer.echo(f"\n✅ Total: {total_chunks} chunks from {len(results)} files")
+            typer.echo(f"📊 Total tokens: {total_tokens}")
+            typer.echo(f"📁 Chunks saved to: {output_dir}")
+        
+        else:
+            typer.echo("❌ Please specify either --input-file or --input-dir")
+            raise typer.Exit(1)
+            
+    except ImportError as e:
+        typer.echo(f"❌ Error importing chunker: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during chunking: {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def summarize(
+    input_file: Optional[Path] = typer.Argument(None, help="Input documentation file to summarize"),
+    input_dir: Optional[Path] = typer.Option(None, "--input-dir", "-i", help="Input directory containing documentation files"),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Output directory for summarized files"),
+    api_key: Optional[str] = typer.Option(None, "--api-key", help="OpenAI API key (or set OPENAI_API_KEY env var)"),
+    model: str = typer.Option("gpt-4o-mini", "--model", "-m", help="OpenAI model to use for summarization"),
+    framework_name: str = typer.Option("unknown", "--framework", "-f", help="Name of the framework/tool being summarized"),
+    max_concurrent: int = typer.Option(5, "--max-concurrent", help="Maximum concurrent API calls"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be processed without making API calls")
+):
+    """Summarize documentation files using OpenAI's GPT-4 API."""
+    try:
+        from llmcontext.core.summarizer import DocumentationSummarizer
+        
+        # Check for API key
+        if not api_key and not os.getenv("OPENAI_API_KEY"):
+            typer.echo("❌ OpenAI API key is required.")
+            typer.echo("Set OPENAI_API_KEY environment variable or use --api-key option")
+            raise typer.Exit(1)
+        
+        summarizer = DocumentationSummarizer(
+            api_key=api_key,
+            model=model,
+            max_concurrent=max_concurrent
+        )
+        
+        if dry_run:
+            typer.echo("🔍 DRY RUN MODE - No API calls will be made")
+            
+            if input_file:
+                typer.echo(f"Would summarize: {input_file}")
+            elif input_dir:
+                files = list(input_dir.glob("*.md"))
+                typer.echo(f"Would summarize {len(files)} files from: {input_dir}")
+                for file in files:
+                    typer.echo(f"  • {file.name}")
+            else:
+                typer.echo("❌ Please specify either --input-file or --input-dir")
+                raise typer.Exit(1)
+            return
+        
+        if input_file:
+            # Summarize single file
+            if not input_file.exists():
+                typer.echo(f"❌ Input file not found: {input_file}")
+                raise typer.Exit(1)
+            
+            typer.echo(f"Summarizing file: {input_file}")
+            result = summarizer.summarize_file(input_file, output_dir)
+            
+            # Show results
+            typer.echo(f"✅ Summarized: {input_file.name}")
+            typer.echo(f"📊 Token reduction: {result.token_reduction:.1f}%")
+            typer.echo(f"📊 Original tokens: {result.original_tokens}")
+            typer.echo(f"📊 Summarized tokens: {result.summarized_tokens}")
+            typer.echo(f"⏱️  Processing time: {result.processing_time:.2f}s")
+            
+            if output_dir:
+                typer.echo(f"📁 Summary saved to: {output_dir}")
+        
+        elif input_dir:
+            # Summarize directory
+            if not input_dir.exists():
+                typer.echo(f"❌ Input directory not found: {input_dir}")
+                raise typer.Exit(1)
+            
+            if not output_dir:
+                output_dir = Path("summarized")
+            
+            typer.echo(f"Summarizing directory: {input_dir}")
+            typer.echo(f"Output directory: {output_dir}")
+            typer.echo(f"Model: {model}")
+            typer.echo(f"Framework: {framework_name}")
+            
+            results = summarizer.summarize_directory(input_dir, output_dir, framework_name)
+            
+            # Show statistics
+            stats = summarizer.get_summary_statistics(results)
+            typer.echo(f"\n✅ Summarized {stats['total_files']} files")
+            typer.echo(f"📊 Overall reduction: {stats['overall_reduction_percent']:.1f}%")
+            typer.echo(f"📊 Average reduction: {stats['average_reduction_percent']:.1f}%")
+            typer.echo(f"📊 Total processing time: {stats['total_processing_time']:.2f}s")
+            typer.echo(f"📊 Token distribution: {stats['token_distribution']}")
+            typer.echo(f"📁 Summaries saved to: {output_dir}")
+        
+        else:
+            typer.echo("❌ Please specify either --input-file or --input-dir")
+            raise typer.Exit(1)
+            
+    except ImportError as e:
+        typer.echo(f"❌ Error importing summarizer: {e}")
+        raise typer.Exit(1)
+    except Exception as e:
+        typer.echo(f"❌ Error during summarization: {e}")
         raise typer.Exit(1)
 
 
